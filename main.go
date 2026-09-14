@@ -54,6 +54,7 @@ func listen(args []string) {
 	}
 	l := newLink()
 	fmt.Printf("\n  %s\n\n", l)
+	log.Println("you are at", candidates(conn))
 	log.Println("waiting for a friend...")
 
 	offers, err := newRoom(l).listen(context.Background(), 1)
@@ -88,7 +89,9 @@ func join(args []string) {
 	if err != nil {
 		log.Fatal("rendezvous:", err)
 	}
-	if err := r.say(hello{Role: 1, Addrs: candidates(conn)}); err != nil {
+	cands := candidates(conn)
+	log.Println("you are at", cands)
+	if err := r.say(hello{Role: 1, Addrs: cands}); err != nil {
 		log.Fatal("rendezvous:", err)
 	}
 	log.Println("calling...")
