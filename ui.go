@@ -195,20 +195,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const (
-	tileW     = 24 // inner width of a roster tile
-	tileMeter = 20
+	tileMinW  = 30 // inner width of a roster tile; grows to fit the longest name
+	tileExtra = 14 // room next to the name for "● 100 ms" or "MUTED"
 )
 
 var (
-	tileSt    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1).Width(tileW)
+	tileSt    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
 	tileSelSt = tileSt.BorderForeground(lipgloss.Color("81"))
 	tileMeSt  = tileSt.BorderForeground(lipgloss.Color("42"))
 )
 
 // tile renders one participant as a bordered card: name, status, meter, volume.
-func tile(st lipgloss.Style, name, status string, mt meter, foot string) string {
-	body := fmt.Sprintf("%s %s\n%s\n%s", bold.Render(trunc(name, tileW-4)), status, mt.bar(tileMeter), foot)
-	return st.Render(body)
+func tile(st lipgloss.Style, w int, name, status string, mt meter, foot string) string {
+	body := fmt.Sprintf("%s %s\n%s\n%s", bold.Render(name), status, mt.bar(w-6), foot)
+	return st.Width(w).Render(body)
+}
+
+// tileWidth fits every name on one line with its status, within the terminal.
+func tileWidth(names []string, term int) int {
+	w := tileMinW
+	for _, n := range names {
+		w = max(w, len([]rune(n))+tileExtra)
+	}
+	return min(w, max(tileMinW, term-6))
 }
 
 func trunc(s string, n int) string {
@@ -232,10 +241,15 @@ func (m model) View() string {
 	if ctl.denoise.Load() {
 		dn = green.Render("denoise on")
 	}
-	me := tile(tileMeSt, m.n.name+" (you)", mic, m.mic,
+	peers := m.n.peerList()
+	names := []string{m.n.name + " (you)"}
+	for _, p := range peers {
+		names = append(names, p.name)
+	}
+	w := tileWidth(names, m.width)
+	me := tile(tileMeSt, w, names[0], mic, m.mic,
 		dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load()))+" "+dn)
 
-	peers := m.n.peerList()
 	tiles := []string{me}
 	for i, p := range peers {
 		st := tileSt
@@ -254,10 +268,10 @@ func (m model) View() string {
 		if i == m.cursor {
 			vol = selSt.Render("◂ " + vol + " ▸")
 		}
-		tiles = append(tiles, tile(st, p.name, status, mt, vol))
+		tiles = append(tiles, tile(st, w, p.name, status, mt, vol))
 	}
 
-	cols := max(1, (max(m.width, tileW+4)-2)/(tileW+3))
+	cols := max(1, (max(m.width, w+4)-2)/(w+3))
 	for i := 0; i < len(tiles); i += cols {
 		row := tiles[i:min(i+cols, len(tiles))]
 		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(lipgloss.JoinHorizontal(lipgloss.Top, row...)))
