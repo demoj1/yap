@@ -58,9 +58,9 @@ func TestRelayThroughThirdPeer(t *testing.T) {
 	go b.recvLoop()
 
 	enc := newEncoder()
-	audio := append([]byte{typAudio}, enc.encode(sine(8000, 440))...)
+	opus := append([]byte(nil), enc.encode(sine(8000, 440))...)
 	for i := 0; i < 5; i++ {
-		a.sendTo(aB, audio)
+		a.sendTo(aB, audioPayload(uint32(i), opus))
 		time.Sleep(5 * time.Millisecond)
 	}
 
@@ -81,7 +81,7 @@ func TestRelayThroughThirdPeer(t *testing.T) {
 	// And back: B answers through the learned relay, A hears it.
 	go a.recvLoop()
 	for i := 0; i < 5; i++ {
-		b.sendTo(bA, audio)
+		b.sendTo(bA, audioPayload(uint32(i), opus))
 		time.Sleep(5 * time.Millisecond)
 	}
 	deadline = time.Now().Add(2 * time.Second)
@@ -105,5 +105,40 @@ func TestRelayForPicksPeerThatReaches(t *testing.T) {
 	aR.reach.Store(&reach)
 	if a.relayFor(aB) != aR {
 		t.Fatal("R reaches B and is direct: must be picked")
+	}
+}
+
+// Forward envelopes share the pair's packet counter with audio; they must
+// not show up as lost frames on the relay's own jitter buffer.
+func TestRelayEnvelopesAreNotLostAudio(t *testing.T) {
+	l := newLink()
+	a, b, r := testNode(t, l, "a"), testNode(t, l, "b"), testNode(t, l, "r")
+	rA := r.addPeer(a, true)
+	r.addPeer(b, true)
+	aR := a.addPeer(r, true)
+	aB := a.addPeer(b, false)
+	aB.via.Store(aR)
+	go r.recvLoop()
+
+	enc := newEncoder()
+	opus := append([]byte(nil), enc.encode(sine(8000, 440))...)
+	for i := 0; i < 20; i++ {
+		p := audioPayload(uint32(i), opus)
+		a.sendTo(aR, p) // audio for R itself
+		a.sendTo(aB, p) // envelope through R for B — interleaved on the same counter
+		time.Sleep(2 * time.Millisecond)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for rA.rx.Load() < 20 {
+		if time.Now().After(deadline) {
+			t.Fatalf("R got only %d audio frames from A", rA.rx.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for i := 0; i < 20; i++ {
+		rA.nextFrame()
+	}
+	if lost := rA.jb.lost.Load(); lost != 0 {
+		t.Fatalf("relay envelopes were counted as %d lost audio frames", lost)
 	}
 }

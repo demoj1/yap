@@ -107,7 +107,7 @@ func (n *node) announce() {
 	} else if prev == nil {
 		log.Println("stun:", err, "— only LAN addresses will be announced")
 	}
-	h := hello{ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load())}
+	h := hello{Proto: proto, ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load())}
 	for _, p := range n.peerList() {
 		if p.direct() {
 			h.Reach = append(h.Reach, p.id)
@@ -127,8 +127,12 @@ func (n *node) onHello(h hello) bool {
 	if string(h.ID) == string(n.id) {
 		return false
 	}
-	if len(h.Nonce) == 0 || len(h.ID) == 0 {
-		log.Println("someone with an old yap is in the room — ask them to update")
+	if h.Proto != proto || len(h.Nonce) == 0 || len(h.ID) == 0 {
+		who := h.Name
+		if who == "" {
+			who = "someone"
+		}
+		log.Printf("%s runs an incompatible yap (proto %d, need %d) — ask them to update", who, h.Proto, proto)
 		return false
 	}
 	n.mu.Lock()
@@ -280,16 +284,17 @@ func (n *node) recvLoop() {
 // for the mixer, a forward request to pass on, or a relayed packet from a
 // third peer to unwrap.
 func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
-	seq := binary.BigEndian.Uint64(pkt[:8])
 	if len(plain) == 0 {
-		q.accept(from, seq, nil)
+		q.accept(from, 0, nil)
 		return
 	}
 	switch plain[0] {
 	case typAudio:
-		q.accept(from, seq, plain[1:])
+		if frame, opus, ok := parseAudio(plain); ok {
+			q.accept(from, frame, opus)
+		}
 	case typForward:
-		q.accept(from, seq, nil)
+		q.accept(from, 0, nil)
 		if len(plain) < 1+idLen+8 {
 			return
 		}
@@ -303,7 +308,7 @@ func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
 		out = append(out, plain[1+idLen:]...)
 		n.conn.WriteToUDP(dst.seal(out), dst.addr.Load())
 	case typRelayed:
-		q.accept(from, seq, nil)
+		q.accept(from, 0, nil)
 		if len(plain) < 1+idLen+8 {
 			return
 		}
@@ -311,19 +316,17 @@ func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
 		if src == nil {
 			return
 		}
-		inner := plain[1+idLen:]
-		innerPlain, ok := src.open(inner)
+		innerPlain, ok := src.open(plain[1+idLen:])
 		if !ok {
 			return
 		}
 		if !src.direct() && src.via.Load() == nil {
 			src.via.Store(q) // they found a relay to us; answer the same way
 		}
-		innerSeq := binary.BigEndian.Uint64(inner[:8])
 		if len(innerPlain) == 0 {
-			src.accept(nil, innerSeq, nil)
-		} else if innerPlain[0] == typAudio {
-			src.accept(nil, innerSeq, innerPlain[1:])
+			src.accept(nil, 0, nil)
+		} else if frame, opus, ok := parseAudio(innerPlain); ok {
+			src.accept(nil, frame, opus)
 		}
 	}
 }
@@ -346,6 +349,7 @@ func (n *node) sendLoop() {
 	dn := rnnoise.New()
 	defer dn.Close()
 	bitrate := 0
+	var frame uint32 // audio frame number, shared by every peer's copy of this frame
 	for f := range n.audio.frames {
 		if n.ctl.muted.Load() {
 			clear(f)
@@ -362,7 +366,8 @@ func (n *node) sendLoop() {
 			must(enc.enc.SetBitrate(b * 1000))
 			bitrate = b
 		}
-		audio := append([]byte{typAudio}, enc.encode(f)...)
+		audio := audioPayload(frame, enc.encode(f))
+		frame++
 		for _, p := range peers {
 			n.sendTo(p, audio)
 		}

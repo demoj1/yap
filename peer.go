@@ -18,13 +18,37 @@ const peerTimeout = 10 * time.Second
 // Payload types, first byte of a non-empty sealed payload. An empty payload
 // is a ping. Relay packets carry an inner packet sealed with the pair key of
 // the two ends, so the relay authenticates the envelope but cannot hear.
+//
+// The packet seq is the AEAD nonce and counts every packet on the pair,
+// forward envelopes included; audio carries its own frame number so the
+// jitter buffer never mistakes a relay envelope for a lost frame.
 const (
-	typAudio   = 0 // [0][opus]
+	typAudio   = 0 // [0][frame uint32][opus]
 	typForward = 1 // [1][dst id 8][inner packet]   to a relay: pass this on
 	typRelayed = 2 // [2][src id 8][inner packet]   from a relay: this came from src
 )
 
-const idLen = 8
+const (
+	idLen     = 8
+	audioHead = 1 + 4
+	proto     = 2 // bumped whenever the wire format changes; hellos with another value are ignored
+)
+
+// audioPayload frames one Opus packet as a typAudio payload.
+func audioPayload(frame uint32, opus []byte) []byte {
+	out := make([]byte, audioHead, audioHead+len(opus))
+	out[0] = typAudio
+	binary.BigEndian.PutUint32(out[1:], frame)
+	return append(out, opus...)
+}
+
+// parseAudio splits a typAudio payload into frame number and Opus data.
+func parseAudio(plain []byte) (uint64, []byte, bool) {
+	if len(plain) < audioHead || plain[0] != typAudio {
+		return 0, nil, false
+	}
+	return uint64(binary.BigEndian.Uint32(plain[1:])), plain[audioHead:], true
+}
 
 // peer is one other participant of the mesh: its pair key, the address its
 // packets come from, and its own jitter buffer + decoder so the mixer can
@@ -116,7 +140,9 @@ func (p *peer) accept(from *net.UDPAddr, seq uint64, audio []byte) {
 		p.addr.Store(from)
 	}
 	p.once.Do(func() { close(p.ready) })
-	p.rx.Add(1)
+	if audio != nil {
+		p.rx.Add(1) // frames, not envelopes: keeps rx comparable with the sender's tx
+	}
 	now := time.Now()
 	if last := p.lastRx.Swap(now.UnixNano()); last != 0 && audio != nil {
 		d := (now.Sub(time.Unix(0, last)) - 20*time.Millisecond).Microseconds()

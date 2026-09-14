@@ -22,6 +22,7 @@ const ntfy = "https://ntfy.sh/"
 // reachable at (LAN + STUN-mapped public). Everyone is symmetric: seeing a
 // hello from an unknown ID means "punch to them".
 type hello struct {
+	Proto int      `json:"proto"` // wire format version; see proto
 	ID    []byte   `json:"id"`
 	Name  string   `json:"name"`
 	Nonce []byte   `json:"nonce"`
