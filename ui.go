@@ -169,7 +169,7 @@ func (m model) View() string {
 	if ctl.denoise.Load() {
 		dn = green.Render("denoise on")
 	}
-	fmt.Fprintf(&b, "  %s %s %s  %-6s %4d kbps · %s\n",
+	fmt.Fprintf(&b, "  %s %s %s  %-6s tx %d kbps · %s\n",
 		green.Render("●"), bold.Render(pad(m.n.name)), m.mic, mic, ctl.bitrate.Load(), dn)
 
 	dot, peer, note := dim.Render("○"), dim.Render(pad("—")), ""

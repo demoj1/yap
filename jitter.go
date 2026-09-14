@@ -6,9 +6,8 @@ import (
 )
 
 const (
-	prebuf      = 3   // frames to collect before playout starts (60 ms)
-	maxDepth    = 10  // frames; beyond that we skip ahead to cut latency
-	shrinkAfter = 100 // pulls (2 s) with excess queued before one frame is dropped to win back 20 ms
+	prebuf   = 3  // frames to collect before playout starts (60 ms)
+	maxDepth = 10 // frames; beyond that we skip ahead to cut latency
 )
 
 // jitter reorders incoming Opus packets by sequence number.
@@ -18,7 +17,6 @@ type jitter struct {
 	next    uint64
 	started bool
 	starve  int // consecutive pulls with an empty buffer; a few get PLC, more means rebuffer
-	excess  int // consecutive pulls that left more than prebuf queued; long runs mean latency crept up
 
 	lost, late, skip, rebuf, stall atomic.Uint64
 }
@@ -64,17 +62,6 @@ func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 		j.starve = 0
 		delete(j.pkts, j.next)
 		j.next++
-		if len(j.pkts) > prebuf {
-			j.excess++
-		} else {
-			j.excess = 0
-		}
-		if j.excess > shrinkAfter {
-			j.excess = 0
-			j.skip.Add(1)
-			delete(j.pkts, j.next)
-			j.next++
-		}
 		return p, false, true
 	}
 	if len(j.pkts) == 0 {

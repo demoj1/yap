@@ -8,6 +8,7 @@ const (
 	sampleRate = 48000
 	frameSize  = 960 // 20 ms @ 48 kHz
 	bitrate    = 96000
+	playTarget = 3 // frames the playback queue holds: cushion against decode-goroutine scheduling jitter
 )
 
 type encoder struct {

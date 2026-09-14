@@ -110,24 +110,3 @@ func TestSkipAheadWhenDeep(t *testing.T) {
 		t.Fatalf("want %d got %d", maxDepth-prebuf, s)
 	}
 }
-
-func TestShrinksWhenLatencyCreeps(t *testing.T) {
-	j := newJitter()
-	for s := 0; s < prebuf+3; s++ {
-		push(j, s)
-	}
-	next := prebuf + 3
-	for i := 0; i <= shrinkAfter; i++ {
-		push(j, next)
-		next++
-		if _, lost := pull(t, j); lost {
-			t.Fatal("no PLC expected while draining")
-		}
-	}
-	if j.skip.Load() != 1 {
-		t.Fatalf("expected exactly one skip, got %d", j.skip.Load())
-	}
-	if d := j.depth(); d != prebuf+2 {
-		t.Fatalf("depth after one shrink want %d got %d", prebuf+2, d)
-	}
-}

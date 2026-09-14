@@ -152,7 +152,7 @@ func (s *session) playLoop(a *audio) {
 		case <-s.done:
 			return
 		}
-		for a.play.len() < frameSize {
+		for a.play.len() < playTarget*frameSize {
 			pkt, lost, ok := s.jb.pull()
 			if !ok {
 				break

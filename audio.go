@@ -39,7 +39,7 @@ func (q *pcmQueue) pull(dst []int16) {
 	q.mu.Lock()
 	n := copy(dst, q.buf)
 	q.buf = q.buf[n:]
-	low := len(q.buf) < frameSize
+	low := len(q.buf) < playTarget*frameSize
 	q.mu.Unlock()
 	if n < len(dst) {
 		q.underrun.Add(uint64(len(dst) - n))
