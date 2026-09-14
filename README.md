@@ -10,7 +10,9 @@ yap join yap://...      # friend runs this
 Both ends get a TUI: level meters, `↑/↓` friend volume, `m` mute, `d` RNNoise
 on/off, `+/-` Opus bitrate (12–160 kbps, live), `q` quit. `-name` sets what the
 friend sees, `-plain` gives logs instead of the TUI. A dropped call goes back
-to waiting/redialing by itself.
+to waiting/redialing by itself. Everything is also logged to
+`<config dir>/yap/yap.log` (`~/.config/yap` on Linux, `~/Library/Application Support/yap`
+on macOS) — send that when something goes wrong.
 
 Opus 48 kHz / 96 kbps, RNNoise, ChaCha20-Poly1305 over raw UDP, peer to peer.
 Both ends run the same binary. NAT traversal: each side learns its public

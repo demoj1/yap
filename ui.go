@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -11,10 +10,9 @@ import (
 )
 
 const (
-	tick      = 33 * time.Millisecond
-	meterLen  = 30
-	logLines  = 6
-	statsEach = time.Second
+	tick     = 33 * time.Millisecond
+	meterLen = 30
+	logLines = 6
 )
 
 type (
@@ -42,11 +40,11 @@ type ui struct {
 
 type model struct {
 	n        *node
+	logPath  string
 	st, peer string
 	s        *session
 	mic, spk meter
 	stats    string
-	statsAt  time.Time
 	logs     []string
 	frame    int
 }
@@ -95,10 +93,9 @@ func (m meter) String() string {
 	return b.String()
 }
 
-func newUI(n *node) *ui {
+func newUI(n *node, logPath string) *ui {
 	u := &ui{}
-	u.prog = tea.NewProgram(model{n: n, statsAt: time.Now()}, tea.WithAltScreen())
-	log.SetOutput(u)
+	u.prog = tea.NewProgram(model{n: n, logPath: logPath}, tea.WithAltScreen())
 	return u
 }
 
@@ -120,9 +117,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.frame++
 		m.mic.feed(m.n.audio.micPeak.take(), m.frame)
 		m.spk.feed(m.n.audio.spkPeak.take(), m.frame)
-		if m.s != nil && time.Since(m.statsAt) >= statsEach {
-			m.stats = m.s.stats(m.n.audio, time.Since(m.statsAt))
-			m.statsAt = time.Now()
+		if m.s != nil {
+			if p := m.s.lastStats.Load(); p != nil {
+				m.stats = *p
+			}
 		}
 		return m, tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) })
 	case logMsg:
@@ -199,6 +197,7 @@ func (m model) View() string {
 	for _, l := range m.logs {
 		fmt.Fprintf(&b, "  %s\n", dim.Render(l))
 	}
+	fmt.Fprintf(&b, "\n  %s\n", dim.Render("full log: "+m.logPath))
 	return b.String()
 }
 

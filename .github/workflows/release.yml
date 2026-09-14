@@ -36,9 +36,9 @@ jobs:
           CGO_ENABLED: "1"
           MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: |
-          GOARCH=arm64 go build -tags nolibopusfile -ldflags="-s -w" -o yap-arm64 .
+          GOARCH=arm64 go build -tags nolibopusfile -ldflags="-s -w -X main.version=$GITHUB_REF_NAME" -o yap-arm64 .
           GOARCH=amd64 CGO_CFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64" \
-            go build -tags nolibopusfile -ldflags="-s -w" -o yap-amd64 .
+            go build -tags nolibopusfile -ldflags="-s -w -X main.version=$GITHUB_REF_NAME" -o yap-amd64 .
           lipo -create -output yap-macos yap-arm64 yap-amd64
           codesign -s - yap-macos
           file yap-macos

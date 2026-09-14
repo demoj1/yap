@@ -3,11 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/user"
+	"path/filepath"
 )
+
+var version = "dev" // set by -ldflags in CI
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `yap — one-to-one voice call, nothing else.
@@ -62,11 +66,18 @@ func main() {
 		usage()
 	}
 
+	logFile, logPath := openLog()
+	defer logFile.Close()
+	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+	log.Println("yap", version, os.Args[1:])
+
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: *port})
 	if err != nil {
 		log.Fatal(err)
 	}
 	n.conn = conn
+	log.Println("link", n.link)
+	log.Println("you are at", candidates(conn))
 	n.audio, err = openAudio()
 	if err != nil {
 		log.Fatal("audio:", err)
@@ -76,12 +87,12 @@ func main() {
 
 	if *plain {
 		fmt.Printf("\n  %s\n\n", n.link)
-		log.Println("you are at", candidates(conn))
-		n.view = newPlainView(n)
+		n.view = plainView{}
 		run()
 		return
 	}
-	ui := newUI(n)
+	ui := newUI(n, logPath)
+	log.SetOutput(io.MultiWriter(logFile, ui))
 	n.view = ui
 	go run()
 	if err := ui.Run(); err != nil {
@@ -95,4 +106,23 @@ func defaultName() string {
 	}
 	h, _ := os.Hostname()
 	return h
+}
+
+// openLog appends to <config>/yap/yap.log, starting over once it grows past 5 MB.
+func openLog() (*os.File, string) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(dir, "yap", "yap.log")
+	must(os.MkdirAll(filepath.Dir(path), 0o700))
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if st, err := os.Stat(path); err == nil && st.Size() > 5<<20 {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
+	if err != nil {
+		panic(err)
+	}
+	return f, path
 }

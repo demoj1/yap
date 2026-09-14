@@ -81,6 +81,10 @@ func (n *node) listenForever() {
 		}
 		offer := <-offers
 		cancel()
+		if len(offer.Nonce) == 0 {
+			log.Println("a friend with an old yap tried to call — ask them to update")
+			continue
+		}
 		log.Println(offer.Name, "is at", offer.Addrs)
 		mine := hello{Role: 0, Name: n.name, Nonce: randBytes(16), Addrs: candidates(n.conn)}
 		if err := room.say(mine); err != nil {
@@ -119,6 +123,11 @@ func (n *node) joinForever() {
 			continue
 		}
 		cancel()
+		if len(answer.Nonce) == 0 {
+			log.Println("the friend runs an old yap — ask them to update")
+			time.Sleep(retryPause)
+			continue
+		}
 		log.Println(answer.Name, "is at", answer.Addrs)
 		n.call(n.link.mediaKey(mine.Nonce, answer.Nonce), 1, answer)
 	}
@@ -141,6 +150,15 @@ func (n *node) call(key [32]byte, dir uint32, peer hello) {
 	n.audio.play.underrun.Store(0)
 	n.audio.capDrop.Store(0)
 	n.view.state("connected", peer.Name)
-	<-s.gone
-	log.Println(peer.Name, "is gone")
+	stats := time.NewTicker(5 * time.Second)
+	defer stats.Stop()
+	for {
+		select {
+		case <-stats.C:
+			log.Println(s.stats(n.audio, 5*time.Second))
+		case <-s.gone:
+			log.Println(peer.Name, "is gone")
+			return
+		}
+	}
 }
