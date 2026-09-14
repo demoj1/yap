@@ -17,8 +17,12 @@ Needs a C compiler and libopus (`pacman -S opus`, `brew install opus`,
 msys2 `mingw-w64-x86_64-opus`).
 
 ```
-go build
+go build -tags nolibopusfile
 ```
+
+macOS binary: GitHub Actions (`release.yml`) builds a universal arm64+x86_64
+`yap-macos` with libopus linked statically. Download it with `curl` (a browser
+download gets quarantined) and `chmod +x`.
 
 RNNoise (xiph, v0.2) is vendored in `internal/rnnoise`; its model is the
 5.5 MB `weights_blob.bin` produced by `dump_weights_blob` from the upstream

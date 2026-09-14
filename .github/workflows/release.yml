@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  OPUS_VERSION: 1.5.2
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build static libopus (universal)
+        run: |
+          curl -sSL https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz | tar xz
+          cmake -S opus-$OPUS_VERSION -B opus-build \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_BUILD_TESTING=OFF \
+            -DCMAKE_INSTALL_PREFIX=$PWD/opus-prefix -DCMAKE_BUILD_TYPE=Release
+          cmake --build opus-build -j
+          cmake --install opus-build
+          echo "PKG_CONFIG_PATH=$PWD/opus-prefix/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Build yap (universal)
+        env:
+          CGO_ENABLED: "1"
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          GOARCH=arm64 go build -tags nolibopusfile -ldflags="-s -w" -o yap-arm64 .
+          GOARCH=amd64 CGO_CFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64" \
+            go build -tags nolibopusfile -ldflags="-s -w" -o yap-amd64 .
+          lipo -create -output yap-macos yap-arm64 yap-amd64
+          codesign -s - yap-macos
+          file yap-macos
+          ./yap-macos 2>&1 | head -3 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yap-macos
+          path: yap-macos
+
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yap-macos
