@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 )
 
 var version = "dev" // set by -ldflags in CI
@@ -85,7 +86,12 @@ func main() {
 	logFile, logPath := openLog()
 	defer logFile.Close()
 	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
-	log.Println("yap", version, os.Args[1:])
+	log.Println("yap", version, "proto", proto, os.Args[1:])
+	host, _ := os.Hostname()
+	log.Printf("host %s · %s/%s · %s · %d cpu · name %q · config %s",
+		host, runtime.GOOS, runtime.GOARCH, runtime.Version(), runtime.NumCPU(), *name, filepath.Dir(set.path))
+	log.Printf("settings: bitrate %d · denoise %v · mic %q · out %q · %d remembered volumes",
+		set.Bitrate, ctl.denoise.Load(), set.Mic, set.Out, len(set.Volumes))
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: *port})
 	if err != nil {
@@ -102,6 +108,9 @@ func main() {
 		log.Fatal("audio:", err)
 	}
 	defer n.audio.Close()
+	log.Println("audio:", n.audio.describe())
+	log.Printf("buffers: jitter %d–%d frames (%d–%d ms) · playback %d frames · peer timeout %s",
+		minPrebuf, maxPrebuf, minPrebuf*20, maxPrebuf*20, playTarget, peerTimeout)
 
 	if *plain {
 		fmt.Printf("\n  %s\n\n", n.link)

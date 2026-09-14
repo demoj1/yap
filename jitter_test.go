@@ -35,8 +35,10 @@ func TestPrebufAndOrder(t *testing.T) {
 	if s, _ := pull(t, j); s != -1 {
 		t.Fatal("must not start before minPrebuf")
 	}
-	push(j, 2, 1)
-	for want := 0; want < 3; want++ {
+	for i := minPrebuf - 1; i >= 1; i-- { // out of order on purpose
+		push(j, i)
+	}
+	for want := 0; want < minPrebuf; want++ {
 		if s, _ := pull(t, j); s != want {
 			t.Fatalf("want %d got %d", want, s)
 		}
@@ -45,7 +47,11 @@ func TestPrebufAndOrder(t *testing.T) {
 
 func TestGapIsLoss(t *testing.T) {
 	j := newJitter()
-	push(j, 0, 1, 3)
+	for i := 0; i <= minPrebuf; i++ {
+		if i != 2 {
+			push(j, i) // seq 2 never arrives in time
+		}
+	}
 	pull(t, j)
 	pull(t, j)
 	if s, lost := pull(t, j); !lost || s != -2 {
@@ -53,6 +59,9 @@ func TestGapIsLoss(t *testing.T) {
 	}
 	if s, _ := pull(t, j); s != 3 {
 		t.Fatalf("want 3 got %d", s)
+	}
+	for j.depth() > 0 { // drain so the buffer is starved when the late one lands
+		pull(t, j)
 	}
 	push(j, 2)
 	if s, _ := pull(t, j); s != -2 {

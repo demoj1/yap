@@ -6,9 +6,9 @@ import (
 )
 
 const (
-	minPrebuf = 3  // frames of playout cushion in calm conditions (60 ms)
-	maxPrebuf = 8  // ceiling the buffer grows to during a jitter burst (160 ms)
-	maxDepth  = 16 // hard cap; beyond this we skip ahead so latency can't run away
+	minPrebuf = 5  // frames of playout cushion in calm conditions (100 ms)
+	maxPrebuf = 10 // ceiling the buffer grows to during a jitter burst (200 ms)
+	maxDepth  = 20 // hard cap; beyond this we skip ahead so latency can't run away
 	relaxRuns = 12 // clean refills before the buffer shrinks one frame toward minPrebuf
 )
 

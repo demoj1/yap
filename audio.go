@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"runtime"
 	"sync"
@@ -202,4 +203,25 @@ func (a *audio) Close() {
 	}
 	a.ctx.Uninit()
 	a.ctx.Free()
+}
+
+// describe names the devices actually in use, resolving "" to the system
+// default's name, for the startup log.
+func (a *audio) describe() string {
+	name := func(kind malgo.DeviceType, chosen string) string {
+		if chosen != "" {
+			return chosen
+		}
+		devs, err := a.ctx.Devices(kind)
+		if err != nil {
+			return "default"
+		}
+		for i := range devs {
+			if devs[i].IsDefault != 0 {
+				return devs[i].Name() + " (default)"
+			}
+		}
+		return "default"
+	}
+	return fmt.Sprintf("mic %q · out %q · %d Hz · period %d", name(malgo.Capture, a.mic), name(malgo.Playback, a.out), sampleRate, frameSize/2)
 }
