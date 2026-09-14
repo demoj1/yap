@@ -26,6 +26,7 @@ type hello struct {
 	Name  string   `json:"name"`
 	Nonce []byte   `json:"nonce"`
 	Addrs []string `json:"addrs"`
+	Reach [][]byte `json:"reach,omitempty"` // IDs we talk to directly; lets others pick us as a relay
 }
 
 // room is a public ntfy.sh topic used only to swap encrypted hellos.

@@ -23,16 +23,18 @@ volume (by name), bitrate and the denoise toggle persist in
 on macOS) — send that when something goes wrong.
 
 Opus 48 kHz / 96 kbps, RNNoise, ChaCha20-Poly1305 over raw UDP, peer to peer.
-Both ends run the same binary. NAT traversal: each side learns its public
-address via STUN and the two swap encrypted address lists through a random
-ntfy.sh topic derived from the link, then UDP hole-punch. Works through
-cone NATs (most home routers); a symmetric NAT on either side will fail —
-there is no relay.
+Everyone runs the same binary. NAT traversal: each participant learns its
+public address via STUN and announces an encrypted address list in a random
+ntfy.sh topic derived from the link; everyone hole-punches to everyone.
+When two people cannot reach each other directly (symmetric NAT, VPN), any
+third participant both of them reach forwards between them — typically the
+person running `listen` on a forwarded port. Relayed audio stays encrypted
+with the pair key of the two ends; the relay only authenticates the envelope.
 
 ## Download
 
 Each tagged release has prebuilt binaries: `yap-macos` (universal),
-`yap-linux-amd64` and `yap-windows-amd64.exe`. Grab one, `chmod +x` (not on
+`yap-linux-amd64`, `yap-linux-arm64` and `yap-windows-amd64.exe`. Grab one, `chmod +x` (not on
 Windows), run it in a terminal — Windows Terminal or PowerShell is fine, no
 extra window needed. On macOS a browser download is quarantined — fetch it
 with `curl -L` or clear it with `xattr -d com.apple.quarantine yap-macos`.

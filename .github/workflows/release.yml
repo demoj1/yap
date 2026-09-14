@@ -144,3 +144,46 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: yap-windows-amd64.exe
+
+  linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross toolchain
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc-aarch64-linux-gnu
+
+      - name: Build static libopus (aarch64)
+        run: |
+          curl -sSL https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz | tar xz
+          cmake -S opus-$OPUS_VERSION -B opus-build \
+            -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_BUILD_TESTING=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX=$PWD/opus-prefix -DCMAKE_BUILD_TYPE=Release
+          cmake --build opus-build -j
+          cmake --install opus-build
+          echo "PKG_CONFIG_PATH=$PWD/opus-prefix/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Build yap (arm64)
+        env:
+          CGO_ENABLED: "1"
+          GOARCH: arm64
+          CC: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          go build -tags nolibopusfile -ldflags="-s -w -X main.version=$GITHUB_REF_NAME" -o yap-linux-arm64 .
+          file yap-linux-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yap-linux-arm64
+          path: yap-linux-arm64
+
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yap-linux-arm64

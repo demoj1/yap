@@ -108,6 +108,11 @@ func (n *node) announce() {
 		log.Println("stun:", err, "— only LAN addresses will be announced")
 	}
 	h := hello{ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load())}
+	for _, p := range n.peerList() {
+		if p.direct() {
+			h.Reach = append(h.Reach, p.id)
+		}
+	}
 	if cur := n.pub.Load(); prev == nil || cur == nil || cur.String() != prev.String() {
 		log.Println("you are at", h.Addrs)
 	}
@@ -130,7 +135,8 @@ func (n *node) onHello(h hello) bool {
 	old, known := n.peers[string(h.ID)]
 	if known && string(old.nonce) == string(h.Nonce) {
 		n.mu.Unlock()
-		if !old.connected() {
+		old.reach.Store(&h.Reach)
+		if !old.direct() && old.via.Load() == nil {
 			go n.punch(old, h.Addrs) // still trying; their fresh candidates may help
 		}
 		return false
@@ -140,13 +146,27 @@ func (n *node) onHello(h hello) bool {
 	}
 	p := newPeer(n.link, n.id, n.nonce, h)
 	p.volume.Store(int32(n.set.volume(p.name)))
+	p.reach.Store(&h.Reach)
 	n.joined++
 	p.joinedAt = n.joined
+	p.since = time.Now()
 	n.peers[string(h.ID)] = p
 	n.mu.Unlock()
 	log.Println(h.Name, "is at", h.Addrs)
 	go n.punch(p, h.Addrs)
 	return true
+}
+
+// relayFor picks a directly connected peer that says it reaches p, so audio
+// for p can go through it. The link owner with an open port is the usual
+// candidate: everyone reaches it.
+func (n *node) relayFor(p *peer) *peer {
+	for _, r := range n.peerList() {
+		if r != p && r.direct() && r.reaches(p.id) {
+			return r
+		}
+	}
+	return nil
 }
 
 // punch pings every candidate address of the peer until one of its packets
@@ -171,13 +191,23 @@ func (n *node) punch(p *peer, cands []string) {
 		}
 		select {
 		case <-p.ready:
-			log.Println("connected:", p.name, p.addr.Load())
+			if p.direct() {
+				log.Println("connected:", p.name, p.addr.Load())
+			} else if via := p.via.Load(); via != nil {
+				log.Println("connected:", p.name, "via", via.name)
+			}
 			return
 		case <-p.gone:
 			return
 		case <-deadline:
+			if r := n.relayFor(p); r != nil {
+				p.via.Store(r)
+				log.Println("no direct path to", p.name, "— relaying via", r.name)
+				return
+			}
+			// Nobody can relay yet; keep the peer so a relayed packet from
+			// their side can still land. expire() drops it if nothing comes.
 			log.Println("could not reach", p.name, "(symmetric NAT on one side?)")
-			n.drop(p)
 			return
 		case <-tick.C:
 		}
@@ -197,6 +227,11 @@ func (n *node) dropLocked(p *peer) {
 	for k, q := range n.byAddr {
 		if q == p {
 			delete(n.byAddr, k)
+		}
+	}
+	for _, q := range n.peers {
+		if q.via.Load() == p {
+			q.via.Store(nil) // their relay is gone; the next hello re-punches
 		}
 	}
 	p.markGone()
@@ -225,7 +260,7 @@ func (n *node) recvLoop() {
 		n.mu.Unlock()
 		if p != nil {
 			if plain, ok := p.open(pkt); ok {
-				p.accept(from, binary.BigEndian.Uint64(pkt[:8]), plain)
+				n.dispatch(p, from, pkt, plain)
 				continue
 			}
 		}
@@ -234,11 +269,69 @@ func (n *node) recvLoop() {
 				n.mu.Lock()
 				n.byAddr[key] = q
 				n.mu.Unlock()
-				q.accept(from, binary.BigEndian.Uint64(pkt[:8]), plain)
+				n.dispatch(q, from, pkt, plain)
 				break
 			}
 		}
 	}
+}
+
+// dispatch handles an authenticated packet from peer q at addr from: audio
+// for the mixer, a forward request to pass on, or a relayed packet from a
+// third peer to unwrap.
+func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
+	seq := binary.BigEndian.Uint64(pkt[:8])
+	if len(plain) == 0 {
+		q.accept(from, seq, nil)
+		return
+	}
+	switch plain[0] {
+	case typAudio:
+		q.accept(from, seq, plain[1:])
+	case typForward:
+		q.accept(from, seq, nil)
+		if len(plain) < 1+idLen+8 {
+			return
+		}
+		dst := n.peerByID(plain[1 : 1+idLen])
+		if dst == nil || !dst.direct() {
+			return
+		}
+		out := make([]byte, 0, 1+idLen+len(plain)-1-idLen)
+		out = append(out, typRelayed)
+		out = append(out, q.id...)
+		out = append(out, plain[1+idLen:]...)
+		n.conn.WriteToUDP(dst.seal(out), dst.addr.Load())
+	case typRelayed:
+		q.accept(from, seq, nil)
+		if len(plain) < 1+idLen+8 {
+			return
+		}
+		src := n.peerByID(plain[1 : 1+idLen])
+		if src == nil {
+			return
+		}
+		inner := plain[1+idLen:]
+		innerPlain, ok := src.open(inner)
+		if !ok {
+			return
+		}
+		if !src.direct() && src.via.Load() == nil {
+			src.via.Store(q) // they found a relay to us; answer the same way
+		}
+		innerSeq := binary.BigEndian.Uint64(inner[:8])
+		if len(innerPlain) == 0 {
+			src.accept(nil, innerSeq, nil)
+		} else if innerPlain[0] == typAudio {
+			src.accept(nil, innerSeq, innerPlain[1:])
+		}
+	}
+}
+
+func (n *node) peerByID(id []byte) *peer {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.peers[string(id)]
 }
 
 func isSTUN(pkt []byte) bool {
@@ -269,20 +362,36 @@ func (n *node) sendLoop() {
 			must(enc.enc.SetBitrate(b * 1000))
 			bitrate = b
 		}
-		opus := enc.encode(f)
+		audio := append([]byte{typAudio}, enc.encode(f)...)
 		for _, p := range peers {
-			addr := p.addr.Load()
-			if addr == nil {
-				continue
-			}
-			pkt := p.seal(opus)
-			if _, err := n.conn.WriteToUDP(pkt, addr); err != nil {
-				log.Println("send:", err)
-			}
-			p.tx.Add(1)
-			p.txBytes.Add(uint64(len(pkt)))
+			n.sendTo(p, audio)
 		}
 	}
+}
+
+// sendTo delivers one payload to p: directly when we have their address,
+// otherwise wrapped as a forward request to their relay. Nothing is sent
+// while neither exists.
+func (n *node) sendTo(p *peer, payload []byte) {
+	var pkt []byte
+	var to *net.UDPAddr
+	if addr := p.addr.Load(); addr != nil {
+		pkt, to = p.seal(payload), addr
+	} else if via := p.via.Load(); via != nil && via.direct() {
+		inner := p.seal(payload)
+		fwd := make([]byte, 0, 1+idLen+len(inner))
+		fwd = append(fwd, typForward)
+		fwd = append(fwd, p.id...)
+		fwd = append(fwd, inner...)
+		pkt, to = via.seal(fwd), via.addr.Load()
+	} else {
+		return
+	}
+	if _, err := n.conn.WriteToUDP(pkt, to); err != nil {
+		log.Println("send:", err)
+	}
+	p.tx.Add(1)
+	p.txBytes.Add(uint64(len(pkt)))
 }
 
 // mixLoop feeds the playback queue: one frame from every peer, scaled by
@@ -314,11 +423,17 @@ func (n *node) mixLoop() {
 	}
 }
 
+const neverConnectedTimeout = 60 * time.Second
+
 func (n *node) reaper() {
 	for range time.Tick(time.Second) {
 		for _, p := range n.peerList() {
-			if p.connected() && p.silentFor() > peerTimeout {
+			switch {
+			case p.connected() && p.silentFor() > peerTimeout:
 				log.Println(p.name, "is gone")
+				n.drop(p)
+			case !p.connected() && time.Since(p.since) > neverConnectedTimeout:
+				log.Println("giving up on", p.name, "— will retry on their next hello")
 				n.drop(p)
 			}
 		}

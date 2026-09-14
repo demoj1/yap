@@ -15,6 +15,17 @@ import (
 
 const peerTimeout = 10 * time.Second
 
+// Payload types, first byte of a non-empty sealed payload. An empty payload
+// is a ping. Relay packets carry an inner packet sealed with the pair key of
+// the two ends, so the relay authenticates the envelope but cannot hear.
+const (
+	typAudio   = 0 // [0][opus]
+	typForward = 1 // [1][dst id 8][inner packet]   to a relay: pass this on
+	typRelayed = 2 // [2][src id 8][inner packet]   from a relay: this came from src
+)
+
+const idLen = 8
+
 // peer is one other participant of the mesh: its pair key, the address its
 // packets come from, and its own jitter buffer + decoder so the mixer can
 // pull one frame from each peer per output frame.
@@ -38,11 +49,14 @@ type peer struct {
 	jb       *jitter
 	dec      *decoder
 	level    peak
-	volume   atomic.Int32  // percent, applied in the mixer
-	joinedAt int64         // roster order
-	punching atomic.Bool   // one punch goroutine at a time
-	ready    chan struct{} // closed on the first authenticated packet from them
-	gone     chan struct{} // closed when they have been silent for peerTimeout
+	volume   atomic.Int32             // percent, applied in the mixer
+	joinedAt int64                    // roster order
+	since    time.Time                // when we learned of them; never-connected peers expire from this
+	punching atomic.Bool              // one punch goroutine at a time
+	via      atomic.Pointer[peer]     // relay we reach this peer through when direct punching failed
+	reach    atomic.Pointer[[][]byte] // IDs this peer said it talks to directly (from its hello)
+	ready    chan struct{}            // closed on the first authenticated packet from them
+	gone     chan struct{}            // closed when they have been silent for peerTimeout
 	once     sync.Once
 	goneOnc  sync.Once
 }
@@ -94,14 +108,17 @@ func (p *peer) open(pkt []byte) ([]byte, bool) {
 	return plain, true
 }
 
-// accept records an authenticated packet from addr: locks the peer to the
-// address, updates liveness/jitter, and queues audio.
-func (p *peer) accept(from *net.UDPAddr, seq uint64, plain []byte) {
-	p.addr.Store(from)
+// accept records an authenticated packet: locks the peer to the address it
+// came from (nil for a relayed packet — the relay's address is not theirs),
+// updates liveness/jitter, and queues audio.
+func (p *peer) accept(from *net.UDPAddr, seq uint64, audio []byte) {
+	if from != nil {
+		p.addr.Store(from)
+	}
 	p.once.Do(func() { close(p.ready) })
 	p.rx.Add(1)
 	now := time.Now()
-	if last := p.lastRx.Swap(now.UnixNano()); last != 0 && len(plain) > 0 {
+	if last := p.lastRx.Swap(now.UnixNano()); last != 0 && audio != nil {
 		d := (now.Sub(time.Unix(0, last)) - 20*time.Millisecond).Microseconds()
 		if d < 0 {
 			d = -d
@@ -109,9 +126,26 @@ func (p *peer) accept(from *net.UDPAddr, seq uint64, plain []byte) {
 		j := p.jitUS.Load()
 		p.jitUS.Store(j + (d-j)/16)
 	}
-	if len(plain) > 0 {
-		p.jb.push(seq, plain)
+	if audio != nil {
+		p.jb.push(seq, audio)
 	}
+}
+
+// direct reports whether we have this peer's own address.
+func (p *peer) direct() bool { return p.addr.Load() != nil }
+
+// reaches reports whether the peer claimed a direct link to id in its hello.
+func (p *peer) reaches(id []byte) bool {
+	r := p.reach.Load()
+	if r == nil {
+		return false
+	}
+	for _, x := range *r {
+		if string(x) == string(id) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *peer) connected() bool {
