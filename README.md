@@ -7,9 +7,12 @@ yap listen              # prints yap://ip:port/secret — send it to a friend
 yap join yap://...      # friend runs this
 ```
 
-Opus 48 kHz / 96 kbps, RNNoise, ChaCha20-Poly1305 over raw UDP. Both ends
-run the same binary. The listener must be reachable on the UDP port (public
-IP or a port forward); the joiner can be behind any NAT.
+Opus 48 kHz / 96 kbps, RNNoise, ChaCha20-Poly1305 over raw UDP, peer to peer.
+Both ends run the same binary. NAT traversal: each side learns its public
+address via STUN and the two swap encrypted address lists through a random
+ntfy.sh topic derived from the link, then UDP hole-punch. Works through
+cone NATs (most home routers); a symmetric NAT on either side will fail —
+there is no relay.
 
 ## Build
 

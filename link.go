@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"fmt"
-	"net"
 	"strings"
 )
 
@@ -13,43 +12,44 @@ const scheme = "yap://"
 
 var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
 
+// link is the shared secret behind yap://<secret>. Everything else — the
+// rendezvous topic and both keys — is derived from it.
 type link struct {
-	addr *net.UDPAddr
-	key  [32]byte // chacha20-poly1305 key derived from the 16-byte secret in the URL
+	secret []byte
 }
 
-func newSecret() string {
-	var s [16]byte
-	if _, err := rand.Read(s[:]); err != nil {
+func newLink() link {
+	s := make([]byte, 16)
+	if _, err := rand.Read(s); err != nil {
 		panic(err)
 	}
-	return strings.ToLower(b32.EncodeToString(s[:]))
+	return link{s}
 }
 
-func formatLink(host string, port int, secret string) string {
-	return fmt.Sprintf("%s%s/%s", scheme, net.JoinHostPort(host, fmt.Sprint(port)), secret)
-}
-
-func parseLink(s string) (*link, error) {
-	rest, ok := strings.CutPrefix(s, scheme)
+func parseLink(s string) (link, error) {
+	enc, ok := strings.CutPrefix(s, scheme)
 	if !ok {
-		return nil, fmt.Errorf("link must start with %s", scheme)
+		return link{}, fmt.Errorf("link must start with %s", scheme)
 	}
-	hostport, secret, ok := strings.Cut(rest, "/")
-	if !ok {
-		return nil, fmt.Errorf("link has no secret part")
-	}
-	addr, err := net.ResolveUDPAddr("udp", hostport)
-	if err != nil {
-		return nil, err
-	}
-	return &link{addr: addr, key: keyFromSecret(secret)}, nil
-}
-
-func keyFromSecret(secret string) [32]byte {
-	raw, err := b32.DecodeString(strings.ToUpper(secret))
+	raw, err := b32.DecodeString(strings.ToUpper(enc))
 	if err != nil || len(raw) != 16 {
-		panic("bad secret in link")
+		return link{}, fmt.Errorf("bad link")
 	}
-	return sha256.Sum256(raw)
+	return link{raw}, nil
 }
+
+func (l link) String() string {
+	return scheme + strings.ToLower(b32.EncodeToString(l.secret))
+}
+
+func (l link) derive(label string) [32]byte {
+	return sha256.Sum256(append([]byte(label), l.secret...))
+}
+
+func (l link) topic() string {
+	k := l.derive("topic")
+	return "yap-" + strings.ToLower(b32.EncodeToString(k[:12]))
+}
+
+func (l link) mediaKey() [32]byte { return l.derive("media") }
+func (l link) sigKey() [32]byte   { return l.derive("sig") }

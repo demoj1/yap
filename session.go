@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/cipher"
 	"encoding/binary"
+	"errors"
 	"log"
 	"net"
 	"sync"
@@ -24,7 +25,7 @@ type session struct {
 	aead    cipher.AEAD
 	dir     uint32
 	peer    atomic.Pointer[net.UDPAddr]
-	seq     uint64
+	seq     atomic.Uint64
 	rx, tx  atomic.Uint64
 	jb      *jitter
 	denoise bool
@@ -52,9 +53,6 @@ func (s *session) sendLoop(a *audio) {
 	if s.denoise {
 		dn = [2]*rnnoise.State{rnnoise.New(), rnnoise.New()}
 	}
-	nonce := make([]byte, chacha20poly1305.NonceSize)
-	binary.BigEndian.PutUint32(nonce, s.dir)
-	buf := make([]byte, 8, 1500)
 	for f := range a.frames {
 		peer := s.peer.Load()
 		if peer == nil {
@@ -64,13 +62,7 @@ func (s *session) sendLoop(a *audio) {
 			dn[0].Process(f[:rnnoise.FrameSize])
 			dn[1].Process(f[rnnoise.FrameSize:])
 		}
-		binary.BigEndian.PutUint64(buf, s.seq)
-		binary.BigEndian.PutUint64(nonce[4:], s.seq)
-		s.seq++
-		pkt := s.aead.Seal(buf[:8], nonce, enc.encode(f), buf[:8])
-		if _, err := s.conn.WriteToUDP(pkt, peer); err != nil {
-			log.Println("send:", err)
-		}
+		s.send(enc.encode(f), peer)
 		s.tx.Add(1)
 	}
 }
@@ -95,6 +87,9 @@ func (s *session) recvLoop() {
 		s.peer.Store(from)
 		s.once.Do(func() { close(s.ready) })
 		s.rx.Add(1)
+		if len(plain) == 0 {
+			continue
+		}
 		s.jb.push(binary.BigEndian.Uint64(buf[:8]), plain)
 	}
 }
@@ -152,4 +147,46 @@ func stunQuery(conn *net.UDPConn, server string) (*net.UDPAddr, error) {
 		return nil, err
 	}
 	return &net.UDPAddr{IP: xor.IP, Port: xor.Port}, nil
+}
+
+// send seals one payload as [seq][AEAD]. An empty payload is a ping: it
+// authenticates the sender and opens the NAT but carries no audio.
+func (s *session) send(payload []byte, to *net.UDPAddr) {
+	seq := s.seq.Add(1) - 1
+	buf := make([]byte, 8, 8+len(payload)+s.aead.Overhead())
+	nonce := make([]byte, chacha20poly1305.NonceSize)
+	binary.BigEndian.PutUint32(nonce, s.dir)
+	binary.BigEndian.PutUint64(buf, seq)
+	binary.BigEndian.PutUint64(nonce[4:], seq)
+	if _, err := s.conn.WriteToUDP(s.aead.Seal(buf, nonce, payload, buf[:8]), to); err != nil {
+		log.Println("send:", err)
+	}
+}
+
+// punch pings every candidate address of the peer until one of its packets
+// gets through (s.ready) or we give up.
+func (s *session) punch(cands []string, timeout time.Duration) error {
+	var addrs []*net.UDPAddr
+	for _, c := range cands {
+		a, err := net.ResolveUDPAddr("udp4", c)
+		if err != nil {
+			panic(err)
+		}
+		addrs = append(addrs, a)
+	}
+	deadline := time.After(timeout)
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		for _, a := range addrs {
+			s.send(nil, a)
+		}
+		select {
+		case <-s.ready:
+			return nil
+		case <-deadline:
+			return errors.New("could not punch through NAT (symmetric NAT on one side?)")
+		case <-tick.C:
+		}
+	}
 }

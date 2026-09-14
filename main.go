@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -11,11 +12,16 @@ import (
 	"time"
 )
 
+const (
+	answerTimeout = 60 * time.Second
+	punchTimeout  = 20 * time.Second
+)
+
 func usage() {
 	fmt.Fprintf(os.Stderr, `yap — one-to-one voice call, nothing else.
 
-  yap listen [-p 4444] [-host 1.2.3.4] [-nodenoise]   print a link, wait for a friend
-  yap join <link> [-nodenoise]                          call the friend
+  yap listen [-p 0] [-nodenoise]     print a link, wait for a friend
+  yap join <link> [-nodenoise]       call the friend
 
 `)
 	os.Exit(2)
@@ -38,8 +44,7 @@ func main() {
 
 func listen(args []string) {
 	fs := flag.NewFlagSet("listen", flag.ExitOnError)
-	port := fs.Int("p", 4444, "UDP port to listen on")
-	host := fs.String("host", "", "public address to put in the link (default: ask STUN)")
+	port := fs.Int("p", 0, "UDP port (default: random)")
 	nodenoise := fs.Bool("nodenoise", false, "disable RNNoise")
 	fs.Parse(args)
 
@@ -47,20 +52,20 @@ func listen(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	pubPort := *port
-	if *host == "" {
-		pub, err := publicAddr(conn)
-		if err != nil {
-			log.Fatalf("stun: %v (pass -host explicitly)", err)
-		}
-		*host, pubPort = pub.IP.String(), pub.Port
-	}
-	secret := newSecret()
-	fmt.Printf("\n  %s\n\n", formatLink(*host, pubPort, secret))
+	l := newLink()
+	fmt.Printf("\n  %s\n\n", l)
 	log.Println("waiting for a friend...")
 
-	s := newSession(conn, keyFromSecret(secret), 0, !*nodenoise)
-	call(s, conn)
+	offers, err := newRoom(l).listen(context.Background(), 1)
+	if err != nil {
+		log.Fatal("rendezvous:", err)
+	}
+	offer := <-offers
+	log.Println("friend is at", offer.Addrs)
+	if err := newRoom(l).say(hello{Role: 0, Addrs: candidates(conn)}); err != nil {
+		log.Fatal("rendezvous:", err)
+	}
+	call(newSession(conn, l.mediaKey(), 0, !*nodenoise), conn, offer.Addrs)
 }
 
 func join(args []string) {
@@ -78,32 +83,44 @@ func join(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s := newSession(conn, l.key, 1, !*nodenoise)
-	s.peer.Store(l.addr)
-	log.Println("calling", l.addr)
-	call(s, conn)
+	r := newRoom(l)
+	answers, err := r.listen(context.Background(), 0)
+	if err != nil {
+		log.Fatal("rendezvous:", err)
+	}
+	if err := r.say(hello{Role: 1, Addrs: candidates(conn)}); err != nil {
+		log.Fatal("rendezvous:", err)
+	}
+	log.Println("calling...")
+	var answer hello
+	select {
+	case answer = <-answers:
+	case <-time.After(answerTimeout):
+		log.Fatal("friend did not answer")
+	}
+	log.Println("friend is at", answer.Addrs)
+	call(newSession(conn, l.mediaKey(), 1, !*nodenoise), conn, answer.Addrs)
 }
 
-func call(s *session, conn *net.UDPConn) {
+func call(s *session, conn *net.UDPConn, peerAddrs []string) {
 	a, err := openAudio()
 	if err != nil {
 		log.Fatal("audio:", err)
 	}
 	defer a.Close()
 	s.run(a)
+	if err := s.punch(peerAddrs, punchTimeout); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("connected:", s.peer.Load())
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	stats := time.NewTicker(5 * time.Second)
 	for {
 		select {
-		case <-s.ready:
-			log.Println("connected:", s.peer.Load())
-			s.ready = nil
 		case <-stats.C:
-			if s.rx.Load() > 0 {
-				log.Printf("tx %d  rx %d  lost %d", s.tx.Load(), s.rx.Load(), s.jb.lost)
-			}
+			log.Printf("tx %d  rx %d  lost %d", s.tx.Load(), s.rx.Load(), s.jb.lost)
 		case <-sig:
 			conn.Close()
 			return
