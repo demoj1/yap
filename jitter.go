@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 const (
 	prebuf   = 2  // frames to collect before playout starts (40 ms)
@@ -13,7 +16,9 @@ type jitter struct {
 	pkts    map[uint64][]byte
 	next    uint64
 	started bool
-	lost    uint64
+	starve  int // consecutive pulls with an empty buffer; a few get PLC, more means rebuffer
+
+	lost, late, skip, rebuf atomic.Uint64
 }
 
 func newJitter() *jitter {
@@ -24,6 +29,7 @@ func (j *jitter) push(seq uint64, pkt []byte) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.started && seq < j.next {
+		j.late.Add(1)
 		return
 	}
 	j.pkts[seq] = pkt
@@ -32,6 +38,7 @@ func (j *jitter) push(seq uint64, pkt []byte) {
 		j.next = j.minSeq()
 	}
 	if len(j.pkts) > maxDepth {
+		j.skip.Add(1)
 		j.next = j.maxSeq() - prebuf
 		for s := range j.pkts {
 			if s < j.next {
@@ -41,8 +48,8 @@ func (j *jitter) push(seq uint64, pkt []byte) {
 	}
 }
 
-// pull returns the next packet in order. lost=true means a gap: the caller
-// should run PLC. ok=false means nothing is buffered yet.
+// pull returns the next packet in order. lost=true means a gap or a sender
+// running slow: the caller should run PLC. ok=false means (re)buffering.
 func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -50,17 +57,29 @@ func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 		return nil, false, false
 	}
 	if p, has := j.pkts[j.next]; has {
+		j.starve = 0
 		delete(j.pkts, j.next)
 		j.next++
 		return p, false, true
 	}
 	if len(j.pkts) == 0 {
-		j.started = false
-		return nil, false, false
+		j.starve++
+		if j.starve > prebuf {
+			j.started = false
+			j.starve = 0
+			j.rebuf.Add(1)
+			return nil, false, false
+		}
 	}
 	j.next++
-	j.lost++
+	j.lost.Add(1)
 	return nil, true, true
+}
+
+func (j *jitter) depth() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return len(j.pkts)
 }
 
 func (j *jitter) minSeq() uint64 {

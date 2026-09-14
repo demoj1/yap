@@ -27,6 +27,9 @@ type session struct {
 	peer    atomic.Pointer[net.UDPAddr]
 	seq     atomic.Uint64
 	rx, tx  atomic.Uint64
+	txBytes atomic.Uint64
+	jitUS   atomic.Int64 // RFC 3550 style interarrival jitter, microseconds
+	lastRx  time.Time
 	jb      *jitter
 	denoise bool
 	once    sync.Once
@@ -90,6 +93,16 @@ func (s *session) recvLoop() {
 		if len(plain) == 0 {
 			continue
 		}
+		now := time.Now()
+		if !s.lastRx.IsZero() {
+			d := (now.Sub(s.lastRx) - 20*time.Millisecond).Microseconds()
+			if d < 0 {
+				d = -d
+			}
+			j := s.jitUS.Load()
+			s.jitUS.Store(j + (d-j)/16)
+		}
+		s.lastRx = now
 		s.jb.push(binary.BigEndian.Uint64(buf[:8]), plain)
 	}
 }
@@ -158,9 +171,11 @@ func (s *session) send(payload []byte, to *net.UDPAddr) {
 	binary.BigEndian.PutUint32(nonce, s.dir)
 	binary.BigEndian.PutUint64(buf, seq)
 	binary.BigEndian.PutUint64(nonce[4:], seq)
-	if _, err := s.conn.WriteToUDP(s.aead.Seal(buf, nonce, payload, buf[:8]), to); err != nil {
+	pkt := s.aead.Seal(buf, nonce, payload, buf[:8])
+	if _, err := s.conn.WriteToUDP(pkt, to); err != nil {
 		log.Println("send:", err)
 	}
+	s.txBytes.Add(uint64(len(pkt)))
 }
 
 // punch pings every candidate address of the peer until one of its packets

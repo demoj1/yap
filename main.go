@@ -123,7 +123,11 @@ func call(s *session, conn *net.UDPConn, peerAddrs []string) {
 	for {
 		select {
 		case <-stats.C:
-			log.Printf("tx %d  rx %d  lost %d", s.tx.Load(), s.rx.Load(), s.jb.lost)
+			log.Printf("tx %d %.1f kB/s  rx %d  jitter %.1f ms | jb depth %d lost %d late %d skip %d rebuf %d | period %d underrun %d capdrop %d | mic %.0f dBFS spk %.0f dBFS",
+				s.tx.Load(), float64(s.txBytes.Swap(0))/5000, s.rx.Load(), float64(s.jitUS.Load())/1000,
+				s.jb.depth(), s.jb.lost.Load(), s.jb.late.Load(), s.jb.skip.Load(), s.jb.rebuf.Load(),
+				a.period.Load(), a.play.underrun.Load(), a.capDrop.Load(),
+				a.micPeak.take(), a.spkPeak.take())
 		case <-sig:
 			conn.Close()
 			return

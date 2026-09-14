@@ -1,7 +1,9 @@
 package main
 
 import (
+	"math"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/gen2brain/malgo"
@@ -9,9 +11,10 @@ import (
 
 // pcmQueue is the playback buffer between the network decoder and the sound card.
 type pcmQueue struct {
-	mu   sync.Mutex
-	buf  []int16
-	need chan struct{}
+	mu       sync.Mutex
+	buf      []int16
+	need     chan struct{}
+	underrun atomic.Uint64 // samples of silence inserted
 }
 
 func newPCMQueue() *pcmQueue {
@@ -38,8 +41,11 @@ func (q *pcmQueue) pull(dst []int16) {
 	q.buf = q.buf[n:]
 	low := len(q.buf) < frameSize
 	q.mu.Unlock()
-	for i := n; i < len(dst); i++ {
-		dst[i] = 0
+	if n < len(dst) {
+		q.underrun.Add(uint64(len(dst) - n))
+		for i := n; i < len(dst); i++ {
+			dst[i] = 0
+		}
 	}
 	if low {
 		select {
@@ -49,12 +55,44 @@ func (q *pcmQueue) pull(dst []int16) {
 	}
 }
 
+// peak tracks the loudest sample since the last take(), in dBFS.
+type peak struct{ v atomic.Int32 }
+
+func (p *peak) observe(pcm []int16) {
+	var m int32
+	for _, s := range pcm {
+		if a := int32(s); a > m {
+			m = a
+		} else if -a > m {
+			m = -a
+		}
+	}
+	for {
+		cur := p.v.Load()
+		if m <= cur || p.v.CompareAndSwap(cur, m) {
+			return
+		}
+	}
+}
+
+func (p *peak) take() float64 {
+	m := p.v.Swap(0)
+	if m == 0 {
+		return math.Inf(-1)
+	}
+	return 20 * math.Log10(float64(m)/32768)
+}
+
 type audio struct {
 	ctx    *malgo.AllocatedContext
 	dev    *malgo.Device
 	acc    []int16
 	frames chan []int16
 	play   *pcmQueue
+
+	period           atomic.Uint32 // frames per callback as the backend actually delivers them
+	capDrop          atomic.Uint64
+	micPeak, spkPeak peak
 }
 
 // openAudio starts a full-duplex 48 kHz mono device. Captured 20 ms frames
@@ -89,8 +127,13 @@ func openAudio() (*audio, error) {
 }
 
 func (a *audio) onData(out, in []byte, count uint32) {
-	a.play.pull(s16(out, count))
-	a.acc = append(a.acc, s16(in, count)...)
+	a.period.Store(count)
+	spk := s16(out, count)
+	a.play.pull(spk)
+	a.spkPeak.observe(spk)
+	mic := s16(in, count)
+	a.micPeak.observe(mic)
+	a.acc = append(a.acc, mic...)
 	for len(a.acc) >= frameSize {
 		f := make([]int16, frameSize)
 		copy(f, a.acc)
@@ -98,6 +141,7 @@ func (a *audio) onData(out, in []byte, count uint32) {
 		select {
 		case a.frames <- f:
 		default:
+			a.capDrop.Add(1)
 		}
 	}
 }

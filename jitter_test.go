@@ -46,8 +46,25 @@ func TestGapIsLoss(t *testing.T) {
 		t.Fatalf("want 3 got %d", s)
 	}
 	push(j, 2)
-	if s, _ := pull(t, j); s != -1 {
-		t.Fatal("late packet must be dropped")
+	if s, _ := pull(t, j); s != -2 {
+		t.Fatal("late packet must be dropped, buffer stays starved")
+	}
+	if j.late.Load() != 1 {
+		t.Fatal("late must be counted")
+	}
+}
+
+func TestSlowSenderGetsPLC(t *testing.T) {
+	j := newJitter()
+	push(j, 0, 1)
+	pull(t, j)
+	pull(t, j)
+	if s, _ := pull(t, j); s != -2 {
+		t.Fatal("first empty pull must be PLC")
+	}
+	push(j, 3)
+	if s, _ := pull(t, j); s != 3 {
+		t.Fatalf("stream continues after PLC, want 3 got %d", s)
 	}
 }
 
@@ -56,16 +73,21 @@ func TestStarveRebuffers(t *testing.T) {
 	push(j, 0, 1)
 	pull(t, j)
 	pull(t, j)
-	if s, _ := pull(t, j); s != -1 {
-		t.Fatal("expected starvation")
+	for i := 0; i < prebuf; i++ {
+		if s, _ := pull(t, j); s != -2 {
+			t.Fatal("expected PLC")
+		}
 	}
-	push(j, 2)
 	if s, _ := pull(t, j); s != -1 {
-		t.Fatal("must rebuffer after starvation")
+		t.Fatal("expected rebuffer after prolonged starvation")
 	}
-	push(j, 3)
-	if s, _ := pull(t, j); s != 2 {
-		t.Fatalf("want 2 got %d", s)
+	push(j, 10)
+	if s, _ := pull(t, j); s != -1 {
+		t.Fatal("must wait for prebuf")
+	}
+	push(j, 11)
+	if s, _ := pull(t, j); s != 10 {
+		t.Fatalf("want 10 got %d", s)
 	}
 }
 
