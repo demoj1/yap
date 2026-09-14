@@ -1,28 +1,21 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
-)
-
-const (
-	answerTimeout = 60 * time.Second
-	punchTimeout  = 20 * time.Second
+	"os/user"
 )
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `yap — one-to-one voice call, nothing else.
 
-  yap listen [-p 0] [-nodenoise]     print a link, wait for a friend
-  yap join <link> [-nodenoise]       call the friend
+  yap listen [-p 4444] [-new]     print a link, wait for a friend (link is kept across restarts)
+  yap join <link>                 call the friend
 
+  common flags: -name <shown to the friend>  -plain (logs instead of the TUI)  -nodenoise
 `)
 	os.Exit(2)
 }
@@ -32,105 +25,74 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
+	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
+	port := fs.Int("p", 4444, "UDP port (listen only)")
+	rotate := fs.Bool("new", false, "forget the saved link and make a new one (listen only)")
+	name := fs.String("name", defaultName(), "your name, shown to the friend")
+	plain := fs.Bool("plain", false, "plain logs instead of the TUI")
+	nodenoise := fs.Bool("nodenoise", false, "start with RNNoise off")
+	fs.Usage = usage
+	fs.Parse(os.Args[2:])
+
+	n := &node{name: *name, ctl: &controls{}}
+	n.ctl.bitrate.Store(96)
+	n.ctl.volume.Store(100)
+	n.ctl.denoise.Store(!*nodenoise)
+
+	var run func()
 	switch os.Args[1] {
 	case "listen":
-		listen(os.Args[2:])
+		if fs.NArg() != 0 {
+			usage()
+		}
+		n.link = loadOrCreateLink(*rotate)
+		run = n.listenForever
 	case "join":
-		join(os.Args[2:])
+		if fs.NArg() != 1 {
+			usage()
+		}
+		l, err := parseLink(fs.Arg(0))
+		if err != nil {
+			log.Fatal(err)
+		}
+		n.link = l
+		*port = 0
+		run = n.joinForever
 	default:
 		usage()
 	}
-}
-
-func listen(args []string) {
-	fs := flag.NewFlagSet("listen", flag.ExitOnError)
-	port := fs.Int("p", 0, "UDP port (default: random)")
-	nodenoise := fs.Bool("nodenoise", false, "disable RNNoise")
-	fs.Parse(args)
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: *port})
 	if err != nil {
 		log.Fatal(err)
 	}
-	l := newLink()
-	fmt.Printf("\n  %s\n\n", l)
-	log.Println("you are at", candidates(conn))
-	log.Println("waiting for a friend...")
-
-	offers, err := newRoom(l).listen(context.Background(), 1)
-	if err != nil {
-		log.Fatal("rendezvous:", err)
-	}
-	offer := <-offers
-	log.Println("friend is at", offer.Addrs)
-	if err := newRoom(l).say(hello{Role: 0, Addrs: candidates(conn)}); err != nil {
-		log.Fatal("rendezvous:", err)
-	}
-	call(newSession(conn, l.mediaKey(), 0, !*nodenoise), conn, offer.Addrs)
-}
-
-func join(args []string) {
-	fs := flag.NewFlagSet("join", flag.ExitOnError)
-	nodenoise := fs.Bool("nodenoise", false, "disable RNNoise")
-	fs.Parse(args)
-	if fs.NArg() != 1 {
-		usage()
-	}
-	l, err := parseLink(fs.Arg(0))
-	if err != nil {
-		log.Fatal(err)
-	}
-	conn, err := net.ListenUDP("udp4", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	r := newRoom(l)
-	answers, err := r.listen(context.Background(), 0)
-	if err != nil {
-		log.Fatal("rendezvous:", err)
-	}
-	cands := candidates(conn)
-	log.Println("you are at", cands)
-	if err := r.say(hello{Role: 1, Addrs: cands}); err != nil {
-		log.Fatal("rendezvous:", err)
-	}
-	log.Println("calling...")
-	var answer hello
-	select {
-	case answer = <-answers:
-	case <-time.After(answerTimeout):
-		log.Fatal("friend did not answer")
-	}
-	log.Println("friend is at", answer.Addrs)
-	call(newSession(conn, l.mediaKey(), 1, !*nodenoise), conn, answer.Addrs)
-}
-
-func call(s *session, conn *net.UDPConn, peerAddrs []string) {
-	a, err := openAudio()
+	n.conn = conn
+	n.audio, err = openAudio()
 	if err != nil {
 		log.Fatal("audio:", err)
 	}
-	defer a.Close()
-	s.run(a)
-	if err := s.punch(peerAddrs, punchTimeout); err != nil {
+	defer n.audio.Close()
+	go n.sendLoop()
+
+	if *plain {
+		fmt.Printf("\n  %s\n\n", n.link)
+		log.Println("you are at", candidates(conn))
+		n.view = newPlainView(n)
+		run()
+		return
+	}
+	ui := newUI(n)
+	n.view = ui
+	go run()
+	if err := ui.Run(); err != nil {
 		log.Fatal(err)
 	}
-	log.Println("connected:", s.peer.Load())
+}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	stats := time.NewTicker(5 * time.Second)
-	for {
-		select {
-		case <-stats.C:
-			log.Printf("tx %d %.1f kB/s  rx %d  jitter %.1f ms | jb depth %d lost %d late %d skip %d rebuf %d | period %d underrun %d capdrop %d | mic %.0f dBFS spk %.0f dBFS",
-				s.tx.Load(), float64(s.txBytes.Swap(0))/5000, s.rx.Load(), float64(s.jitUS.Load())/1000,
-				s.jb.depth(), s.jb.lost.Load(), s.jb.late.Load(), s.jb.skip.Load(), s.jb.rebuf.Load(),
-				a.period.Load(), a.play.underrun.Load(), a.capDrop.Load(),
-				a.micPeak.take(), a.spkPeak.take())
-		case <-sig:
-			conn.Close()
-			return
-		}
+func defaultName() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
 	}
+	h, _ := os.Hostname()
+	return h
 }

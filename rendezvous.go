@@ -21,6 +21,8 @@ const ntfy = "https://ntfy.sh/"
 // every address it might be reachable at (LAN + STUN-mapped public).
 type hello struct {
 	Role  uint32   `json:"role"`
+	Name  string   `json:"name"`
+	Nonce []byte   `json:"nonce"`
 	Addrs []string `json:"addrs"`
 }
 

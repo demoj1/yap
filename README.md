@@ -3,9 +3,14 @@
 One-to-one voice call from the terminal. No accounts, no servers, no UI.
 
 ```
-yap listen              # prints yap://ip:port/secret — send it to a friend
+yap listen              # prints yap://<secret> — send it to a friend; the link survives restarts
 yap join yap://...      # friend runs this
 ```
+
+Both ends get a TUI: level meters, `↑/↓` friend volume, `m` mute, `d` RNNoise
+on/off, `+/-` Opus bitrate (12–160 kbps, live), `q` quit. `-name` sets what the
+friend sees, `-plain` gives logs instead of the TUI. A dropped call goes back
+to waiting/redialing by itself.
 
 Opus 48 kHz / 96 kbps, RNNoise, ChaCha20-Poly1305 over raw UDP, peer to peer.
 Both ends run the same binary. NAT traversal: each side learns its public

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -19,15 +21,19 @@ type link struct {
 }
 
 func newLink() link {
-	s := make([]byte, 16)
-	if _, err := rand.Read(s); err != nil {
+	return link{randBytes(16)}
+}
+
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
 		panic(err)
 	}
-	return link{s}
+	return b
 }
 
 func parseLink(s string) (link, error) {
-	enc, ok := strings.CutPrefix(s, scheme)
+	enc, ok := strings.CutPrefix(strings.TrimSpace(s), scheme)
 	if !ok {
 		return link{}, fmt.Errorf("link must start with %s", scheme)
 	}
@@ -38,12 +44,41 @@ func parseLink(s string) (link, error) {
 	return link{raw}, nil
 }
 
+// loadOrCreateLink keeps the listener's link across restarts in the user
+// config dir, so a friend can keep calling the same address.
+func loadOrCreateLink(rotate bool) link {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(dir, "yap", "link")
+	if !rotate {
+		if raw, err := os.ReadFile(path); err == nil {
+			l, err := parseLink(string(raw))
+			if err != nil {
+				panic(path + ": " + err.Error())
+			}
+			return l
+		}
+	}
+	l := newLink()
+	must(os.MkdirAll(filepath.Dir(path), 0o700))
+	must(os.WriteFile(path, []byte(l.String()+"\n"), 0o600))
+	return l
+}
+
 func (l link) String() string {
 	return scheme + strings.ToLower(b32.EncodeToString(l.secret))
 }
 
-func (l link) derive(label string) [32]byte {
-	return sha256.Sum256(append([]byte(label), l.secret...))
+func (l link) derive(label string, extra ...[]byte) [32]byte {
+	h := sha256.New()
+	h.Write([]byte(label))
+	h.Write(l.secret)
+	for _, e := range extra {
+		h.Write(e)
+	}
+	return [32]byte(h.Sum(nil))
 }
 
 func (l link) topic() string {
@@ -51,5 +86,10 @@ func (l link) topic() string {
 	return "yap-" + strings.ToLower(b32.EncodeToString(k[:12]))
 }
 
-func (l link) mediaKey() [32]byte { return l.derive("media") }
-func (l link) sigKey() [32]byte   { return l.derive("sig") }
+func (l link) sigKey() [32]byte { return l.derive("sig") }
+
+// mediaKey is fresh per call: both sides contribute a nonce through the
+// rendezvous, so packet counters restarting at 0 never reuse a keystream.
+func (l link) mediaKey(offerNonce, answerNonce []byte) [32]byte {
+	return l.derive("media", offerNonce, answerNonce)
+}
