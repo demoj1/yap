@@ -52,9 +52,9 @@ func (s *session) run(a *audio) {
 
 func (s *session) sendLoop(a *audio) {
 	enc := newEncoder()
-	var dn [2]*rnnoise.State
+	var dn *rnnoise.State
 	if s.denoise {
-		dn = [2]*rnnoise.State{rnnoise.New(), rnnoise.New()}
+		dn = rnnoise.New()
 	}
 	for f := range a.frames {
 		peer := s.peer.Load()
@@ -62,8 +62,8 @@ func (s *session) sendLoop(a *audio) {
 			continue
 		}
 		if s.denoise {
-			dn[0].Process(f[:rnnoise.FrameSize])
-			dn[1].Process(f[rnnoise.FrameSize:])
+			dn.Process(f[:rnnoise.FrameSize])
+			dn.Process(f[rnnoise.FrameSize:])
 		}
 		s.send(enc.encode(f), peer)
 		s.tx.Add(1)

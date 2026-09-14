@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	prebuf   = 2  // frames to collect before playout starts (40 ms)
+	prebuf   = 3  // frames to collect before playout starts (60 ms)
 	maxDepth = 10 // frames; beyond that we skip ahead to cut latency
 )
 
