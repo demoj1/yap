@@ -138,17 +138,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "up", "k":
-			ctl.volume.Store(min(200, ctl.volume.Load()+10))
+			m.n.setPeerVolume(int(min(200, ctl.volume.Load()+10)))
 		case "down", "j":
-			ctl.volume.Store(max(0, ctl.volume.Load()-10))
+			m.n.setPeerVolume(int(max(0, ctl.volume.Load()-10)))
 		case "m":
 			ctl.muted.Store(!ctl.muted.Load())
 		case "d":
 			ctl.denoise.Store(!ctl.denoise.Load())
+			m.n.set.Denoise = ctl.denoise.Load()
+			m.n.set.save()
 		case "+", "=":
 			ctl.stepBitrate(+1)
+			m.n.set.Bitrate = int(ctl.bitrate.Load())
+			m.n.set.save()
 		case "-", "_":
 			ctl.stepBitrate(-1)
+			m.n.set.Bitrate = int(ctl.bitrate.Load())
+			m.n.set.save()
 		}
 	}
 	return m, nil
@@ -171,6 +177,9 @@ func (m model) View() string {
 	}
 	fmt.Fprintf(&b, "  %s %s %s  %-6s tx %d kbps · %s\n",
 		green.Render("●"), bold.Render(pad(m.n.name)), m.mic, mic, ctl.bitrate.Load(), dn)
+	if m.n.set.Mic != "" || m.n.set.Out != "" {
+		fmt.Fprintf(&b, "  %s\n", dim.Render(fmt.Sprintf("mic %s · out %s", orDefault(m.n.set.Mic), orDefault(m.n.set.Out))))
+	}
 
 	dot, peer, note := dim.Render("○"), dim.Render(pad("—")), ""
 	switch m.st {
@@ -208,4 +217,11 @@ func pad(s string) string {
 		s = string([]rune(s)[:11]) + "…"
 	}
 	return fmt.Sprintf("%-12s", s)
+}
+
+func orDefault(s string) string {
+	if s == "" {
+		return "default"
+	}
+	return s
 }

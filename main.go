@@ -18,8 +18,10 @@ func usage() {
 
   yap listen [-p 4444] [-new]     print a link, wait for a friend (link is kept across restarts)
   yap join <link>                 call the friend
+  yap devices                     list microphones and speakers
 
-  common flags: -name <shown to the friend>  -plain (logs instead of the TUI)  -nodenoise
+  common flags: -name <shown to the friend>  -mic <name>  -out <name>
+                -plain (logs instead of the TUI)  -nodenoise
 `)
 	os.Exit(2)
 }
@@ -29,19 +31,31 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
+	if os.Args[1] == "devices" {
+		printDevices()
+		return
+	}
+	set := loadSettings()
+
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	port := fs.Int("p", 4444, "UDP port (listen only)")
 	rotate := fs.Bool("new", false, "forget the saved link and make a new one (listen only)")
 	name := fs.String("name", defaultName(), "your name, shown to the friend")
 	plain := fs.Bool("plain", false, "plain logs instead of the TUI")
 	nodenoise := fs.Bool("nodenoise", false, "start with RNNoise off")
+	mic := fs.String("mic", set.Mic, "microphone name or prefix (default: system default)")
+	out := fs.String("out", set.Out, "speaker name or prefix (default: system default)")
 	fs.Usage = usage
 	fs.Parse(os.Args[2:])
 
-	n := &node{name: *name, ctl: &controls{}}
-	n.ctl.bitrate.Store(96)
+	n := &node{name: *name, ctl: &controls{}, set: set}
+	n.ctl.bitrate.Store(int32(set.Bitrate))
 	n.ctl.volume.Store(100)
-	n.ctl.denoise.Store(!*nodenoise)
+	denoise := set.Denoise
+	if *nodenoise {
+		denoise = false
+	}
+	n.ctl.denoise.Store(denoise)
 
 	var run func()
 	switch os.Args[1] {
@@ -78,7 +92,11 @@ func main() {
 	n.conn = conn
 	log.Println("link", n.link)
 	log.Println("you are at", candidates(conn))
-	n.audio, err = openAudio()
+	if *mic != set.Mic || *out != set.Out {
+		set.Mic, set.Out = *mic, *out
+		set.save()
+	}
+	n.audio, err = openAudio(*mic, *out)
 	if err != nil {
 		log.Fatal("audio:", err)
 	}

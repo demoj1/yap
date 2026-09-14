@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -97,7 +98,7 @@ type audio struct {
 
 // openAudio starts a full-duplex 48 kHz mono device. Captured 20 ms frames
 // arrive on a.frames; playback is fed through a.play.
-func openAudio() (*audio, error) {
+func openAudio(micName, outName string) (*audio, error) {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return nil, err
@@ -111,6 +112,18 @@ func openAudio() (*audio, error) {
 	cfg.Capture.Channels = 1
 	cfg.Playback.Format = malgo.FormatS16
 	cfg.Playback.Channels = 1
+	capID := deviceID(ctx.Context, malgo.Capture, micName)
+	playID := deviceID(ctx.Context, malgo.Playback, outName)
+	var pin runtime.Pinner
+	if capID != nil {
+		pin.Pin(capID)
+		cfg.Capture.DeviceID = unsafe.Pointer(capID)
+	}
+	if playID != nil {
+		pin.Pin(playID)
+		cfg.Playback.DeviceID = unsafe.Pointer(playID)
+	}
+	defer pin.Unpin() // InitDevice copies the IDs into the device
 
 	dev, err := malgo.InitDevice(ctx.Context, cfg, malgo.DeviceCallbacks{Data: a.onData})
 	if err != nil {

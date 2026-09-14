@@ -31,8 +31,10 @@ type node struct {
 	link  link
 	name  string
 	ctl   *controls
+	set   *settings
 	view  view
 	cur   atomic.Pointer[session] // the call in progress, if any
+	peer  atomic.Pointer[string]  // name of the connected friend, for per-friend volume
 }
 
 // sendLoop runs for the life of the node so microphone frames are always
@@ -149,6 +151,10 @@ func (n *node) call(key [32]byte, dir uint32, peer hello) {
 	log.Println("connected:", s.peer.Load())
 	n.audio.play.underrun.Store(0)
 	n.audio.capDrop.Store(0)
+	name := peer.Name
+	n.peer.Store(&name)
+	n.ctl.volume.Store(int32(n.set.volume(name)))
+	defer n.peer.Store(nil)
 	n.view.state("connected", peer.Name)
 	stats := time.NewTicker(5 * time.Second)
 	defer stats.Stop()
@@ -160,5 +166,13 @@ func (n *node) call(key [32]byte, dir uint32, peer hello) {
 			log.Println(peer.Name, "is gone")
 			return
 		}
+	}
+}
+
+// setPeerVolume updates the live volume and remembers it for this friend.
+func (n *node) setPeerVolume(v int) {
+	n.ctl.volume.Store(int32(v))
+	if p := n.peer.Load(); p != nil {
+		n.set.setVolume(*p, v)
 	}
 }
