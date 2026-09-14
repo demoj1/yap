@@ -24,6 +24,13 @@ ntfy.sh topic derived from the link, then UDP hole-punch. Works through
 cone NATs (most home routers); a symmetric NAT on either side will fail —
 there is no relay.
 
+## Download
+
+Each tagged release has prebuilt binaries: `yap-macos` (universal) and
+`yap-linux-amd64`. Grab one, `chmod +x`, run. On macOS a browser download is
+quarantined — fetch it with `curl -L` or clear it with
+`xattr -d com.apple.quarantine yap-macos`.
+
 ## Build
 
 Needs a C compiler and libopus (`pacman -S opus`, `brew install opus`,
