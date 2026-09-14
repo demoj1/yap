@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gen2brain/malgo"
 )
 
 const (
@@ -20,6 +21,7 @@ type (
 	logMsg     string
 	stateMsg   struct{ st, peer string }
 	sessionMsg struct{ s *session }
+	noticeMsg  string
 )
 
 var (
@@ -41,6 +43,8 @@ type ui struct {
 type model struct {
 	n        *node
 	logPath  string
+	notice   string
+	noticeAt int
 	st, peer string
 	s        *session
 	mic, spk meter
@@ -132,6 +136,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.st, m.peer = msg.st, msg.peer
 	case sessionMsg:
 		m.s, m.stats = msg.s, ""
+	case noticeMsg:
+		m.notice, m.noticeAt = string(msg), m.frame
 	case tea.KeyMsg:
 		ctl := m.n.ctl
 		switch msg.String() {
@@ -155,6 +161,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ctl.stepBitrate(-1)
 			m.n.set.Bitrate = int(ctl.bitrate.Load())
 			m.n.set.save()
+		case "i":
+			return m, func() tea.Msg { return noticeMsg(m.n.cycleDevice(malgo.Capture)) }
+		case "o":
+			return m, func() tea.Msg { return noticeMsg(m.n.cycleDevice(malgo.Playback)) }
 		}
 	}
 	return m, nil
@@ -201,8 +211,14 @@ func (m model) View() string {
 	if m.stats != "" {
 		fmt.Fprintf(&b, "  %s\n\n", dim.Render(m.stats))
 	}
-	fmt.Fprintf(&b, "  %s volume  %s mute  %s denoise  %s bitrate  %s quit\n\n",
-		keySt.Render("↑/↓"), keySt.Render("m"), keySt.Render("d"), keySt.Render("+/-"), keySt.Render("q"))
+	fmt.Fprintf(&b, "  %s volume  %s mute  %s denoise  %s bitrate  %s mic  %s out  %s quit\n",
+		keySt.Render("↑/↓"), keySt.Render("m"), keySt.Render("d"), keySt.Render("+/-"),
+		keySt.Render("i"), keySt.Render("o"), keySt.Render("q"))
+	if m.notice != "" && m.frame-m.noticeAt < 90 {
+		fmt.Fprintf(&b, "  %s\n", yellow.Render(m.notice))
+	} else {
+		b.WriteString("\n")
+	}
 	for _, l := range m.logs {
 		fmt.Fprintf(&b, "  %s\n", dim.Render(l))
 	}

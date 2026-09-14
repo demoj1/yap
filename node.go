@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/demoj1/yap/internal/rnnoise"
+	"github.com/gen2brain/malgo"
 )
 
 const (
@@ -175,4 +176,48 @@ func (n *node) setPeerVolume(v int) {
 	if p := n.peer.Load(); p != nil {
 		n.set.setVolume(*p, v)
 	}
+}
+
+// cycleDevice switches the mic (kind Capture) or speaker (kind Playback) to
+// the next available one, wrapping through "" = system default, and
+// remembers the choice. Returns a short label for the UI.
+func (n *node) cycleDevice(kind malgo.DeviceType) string {
+	devs, err := listDevices(kind)
+	if err != nil {
+		log.Println("devices:", err)
+		return ""
+	}
+	names := []string{""} // "" = system default, always first
+	for i := range devs {
+		names = append(names, devs[i].Name())
+	}
+	cur := n.audio.mic
+	if kind == malgo.Playback {
+		cur = n.audio.out
+	}
+	idx := 0
+	for i, name := range names {
+		if name == cur {
+			idx = i
+			break
+		}
+	}
+	next := names[(idx+1)%len(names)]
+
+	var mic, out string
+	if kind == malgo.Capture {
+		mic, out = next, n.audio.out
+	} else {
+		mic, out = n.audio.mic, next
+	}
+	gotMic, gotOut, err := n.audio.reopen(mic, out)
+	if err != nil {
+		log.Println("switch device:", err)
+	}
+	n.set.Mic, n.set.Out = gotMic, gotOut
+	n.set.save()
+	if kind == malgo.Capture {
+		return "mic: " + orDefault(gotMic)
+	}
+	return "out: " + orDefault(gotOut)
 }

@@ -94,6 +94,9 @@ type audio struct {
 	period           atomic.Uint32 // frames per callback as the backend actually delivers them
 	capDrop          atomic.Uint64
 	micPeak, spkPeak peak
+
+	mu       sync.Mutex // guards a device swap against Close
+	mic, out string     // current device names, "" = system default
 }
 
 // openAudio starts a full-duplex 48 kHz mono device. Captured 20 ms frames
@@ -103,8 +106,18 @@ func openAudio(micName, outName string) (*audio, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &audio{ctx: ctx, frames: make(chan []int16, 8), play: newPCMQueue()}
+	a := &audio{ctx: ctx, frames: make(chan []int16, 8), play: newPCMQueue(), mic: micName, out: outName}
+	if err := a.startDevice(); err != nil {
+		ctx.Uninit()
+		ctx.Free()
+		return nil, err
+	}
+	return a, nil
+}
 
+// startDevice opens the duplex device for the current a.mic / a.out. The
+// caller holds a.mu (or is the constructor).
+func (a *audio) startDevice() error {
 	cfg := malgo.DefaultDeviceConfig(malgo.Duplex)
 	cfg.SampleRate = sampleRate
 	cfg.PeriodSizeInFrames = frameSize / 2
@@ -112,8 +125,8 @@ func openAudio(micName, outName string) (*audio, error) {
 	cfg.Capture.Channels = 1
 	cfg.Playback.Format = malgo.FormatS16
 	cfg.Playback.Channels = 1
-	capID := deviceID(ctx.Context, malgo.Capture, micName)
-	playID := deviceID(ctx.Context, malgo.Playback, outName)
+	capID := deviceID(a.ctx.Context, malgo.Capture, a.mic)
+	playID := deviceID(a.ctx.Context, malgo.Playback, a.out)
 	var pin runtime.Pinner
 	if capID != nil {
 		pin.Pin(capID)
@@ -125,18 +138,36 @@ func openAudio(micName, outName string) (*audio, error) {
 	}
 	defer pin.Unpin() // InitDevice copies the IDs into the device
 
-	dev, err := malgo.InitDevice(ctx.Context, cfg, malgo.DeviceCallbacks{Data: a.onData})
+	dev, err := malgo.InitDevice(a.ctx.Context, cfg, malgo.DeviceCallbacks{Data: a.onData})
 	if err != nil {
-		ctx.Uninit()
-		ctx.Free()
-		return nil, err
+		return err
+	}
+	if err := dev.Start(); err != nil {
+		dev.Uninit()
+		return err
 	}
 	a.dev = dev
-	if err := dev.Start(); err != nil {
-		a.Close()
-		return nil, err
+	return nil
+}
+
+// reopen switches to different devices without dropping the call: the frames
+// and playback queue live on the audio struct, only the malgo device is
+// swapped. On failure it restores the previous device. Returns the names now
+// in effect.
+func (a *audio) reopen(mic, out string) (string, string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	prevMic, prevOut, prevDev := a.mic, a.out, a.dev
+	a.dev.Uninit() // blocks until callbacks stop
+	a.mic, a.out = mic, out
+	if err := a.startDevice(); err != nil {
+		a.mic, a.out, a.dev = prevMic, prevOut, prevDev
+		if e2 := a.startDevice(); e2 != nil {
+			return prevMic, prevOut, e2
+		}
+		return prevMic, prevOut, err
 	}
-	return a, nil
+	return mic, out, nil
 }
 
 func (a *audio) onData(out, in []byte, count uint32) {
@@ -164,7 +195,11 @@ func s16(b []byte, n uint32) []int16 {
 }
 
 func (a *audio) Close() {
-	a.dev.Uninit()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.dev != nil {
+		a.dev.Uninit()
+	}
 	a.ctx.Uninit()
 	a.ctx.Free()
 }

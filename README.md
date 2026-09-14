@@ -11,7 +11,8 @@ Both ends get a TUI: level meters, `↑/↓` friend volume, `m` mute, `d` RNNois
 on/off, `+/-` Opus bitrate (12–160 kbps, live), `q` quit. `-name` sets what the
 friend sees, `-plain` gives logs instead of the TUI. A dropped call goes back
 to waiting/redialing by itself. `yap devices` lists microphones and speakers; `-mic` / `-out` pick one by
-name or unique prefix and are remembered. Per-friend volume, bitrate and the
+name or unique prefix and are remembered, and `i` / `o` in the TUI switch them
+live mid-call. Per-friend volume, bitrate and the
 denoise toggle persist in `<config dir>/yap/settings.json`. Everything is also logged to
 `<config dir>/yap/yap.log` (`~/.config/yap` on Linux, `~/Library/Application Support/yap`
 on macOS) — send that when something goes wrong.
