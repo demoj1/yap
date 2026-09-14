@@ -189,6 +189,9 @@ func (n *node) cycleDevice(kind malgo.DeviceType) string {
 	}
 	names := []string{""} // "" = system default, always first
 	for i := range devs {
+		if kind == malgo.Capture && isMonitor(devs[i].Name()) {
+			continue // loopback monitors are never a usable microphone
+		}
 		names = append(names, devs[i].Name())
 	}
 	cur := n.audio.mic

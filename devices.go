@@ -62,27 +62,37 @@ func lower(b byte) byte {
 // The copy is stable (not a moving slice element) so it can be pinned and
 // handed to C. Returns nil for "" or no match, i.e. the system default.
 func deviceID(ctx malgo.Context, kind malgo.DeviceType, name string) *malgo.DeviceID {
-	if name == "" {
-		return nil
-	}
 	devs, err := ctx.Devices(kind)
 	if err != nil {
 		return nil
 	}
-	pick := func() *malgo.DeviceID {
+	if name == "" { // system default: the device miniaudio stars
 		for i := range devs {
-			if devs[i].Name() == name {
+			if devs[i].IsDefault != 0 {
 				id := devs[i].ID
 				return &id
 			}
 		}
-		for i := range devs {
-			if hasPrefixFold(devs[i].Name(), name) {
-				id := devs[i].ID
-				return &id
-			}
-		}
-		return nil
+		return nil // none flagged: let miniaudio choose
 	}
-	return pick()
+	for i := range devs {
+		if devs[i].Name() == name {
+			id := devs[i].ID
+			return &id
+		}
+	}
+	for i := range devs {
+		if hasPrefixFold(devs[i].Name(), name) {
+			id := devs[i].ID
+			return &id
+		}
+	}
+	return nil
+}
+
+// isMonitor reports whether a capture device is a PulseAudio/PipeWire monitor
+// (loopback of an output) rather than a real microphone. These are useless as
+// a call input, so the picker skips them.
+func isMonitor(name string) bool {
+	return hasPrefixFold(name, "Monitor of ") || hasPrefixFold(name, "Monitor ")
 }

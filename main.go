@@ -19,6 +19,7 @@ func usage() {
   yap listen [-p 4444] [-new]     print a link, wait for a friend (link is kept across restarts)
   yap join <link>                 call the friend
   yap devices                     list microphones and speakers
+  yap reset                       forget saved devices/volumes, back to defaults
 
   common flags: -name <shown to the friend>  -mic <name>  -out <name>
                 -plain (logs instead of the TUI)  -nodenoise
@@ -33,6 +34,14 @@ func main() {
 	}
 	if os.Args[1] == "devices" {
 		printDevices()
+		return
+	}
+	if os.Args[1] == "reset" {
+		set := loadSettings()
+		if err := os.Remove(set.path); err != nil && !os.IsNotExist(err) {
+			log.Fatal(err)
+		}
+		fmt.Println("settings reset to defaults:", set.path)
 		return
 	}
 	set := loadSettings()
