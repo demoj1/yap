@@ -14,6 +14,15 @@ func pull(t *testing.T, j *jitter) (seq int, lost bool) {
 	return int(p[0]), false
 }
 
+func fill(j *jitter) {
+	for s := 0; s < prebuf; s++ {
+		push(j, s)
+	}
+	for s := 0; s < prebuf; s++ {
+		j.pull()
+	}
+}
+
 func push(j *jitter, seqs ...int) {
 	for _, s := range seqs {
 		j.push(uint64(s), []byte{byte(s)})
@@ -56,23 +65,19 @@ func TestGapIsLoss(t *testing.T) {
 
 func TestSlowSenderGetsPLC(t *testing.T) {
 	j := newJitter()
-	push(j, 0, 1)
-	pull(t, j)
-	pull(t, j)
+	fill(j)
 	if s, _ := pull(t, j); s != -2 {
 		t.Fatal("first empty pull must be PLC")
 	}
-	push(j, 3)
-	if s, _ := pull(t, j); s != 3 {
-		t.Fatalf("stream continues after PLC, want 3 got %d", s)
+	push(j, prebuf+1)
+	if s, _ := pull(t, j); s != prebuf+1 {
+		t.Fatalf("stream continues after PLC, want %d got %d", prebuf+1, s)
 	}
 }
 
 func TestStarveRebuffers(t *testing.T) {
 	j := newJitter()
-	push(j, 0, 1)
-	pull(t, j)
-	pull(t, j)
+	fill(j)
 	for i := 0; i < prebuf; i++ {
 		if s, _ := pull(t, j); s != -2 {
 			t.Fatal("expected PLC")
@@ -81,11 +86,13 @@ func TestStarveRebuffers(t *testing.T) {
 	if s, _ := pull(t, j); s != -1 {
 		t.Fatal("expected rebuffer after prolonged starvation")
 	}
-	push(j, 10)
+	for s := 10; s < 10+prebuf-1; s++ {
+		push(j, s)
+	}
 	if s, _ := pull(t, j); s != -1 {
 		t.Fatal("must wait for prebuf")
 	}
-	push(j, 11)
+	push(j, 10+prebuf-1)
 	if s, _ := pull(t, j); s != 10 {
 		t.Fatalf("want 10 got %d", s)
 	}
