@@ -133,17 +133,41 @@ func (p *peer) silentFor() time.Duration {
 
 func (p *peer) markGone() { p.goneOnc.Do(func() { close(p.gone) }) }
 
+// quietPeak is the loudest sample a frame may have and still be dropped
+// unheard to win back latency (~ -44 dBFS; RNNoise leaves silence near 0).
+const quietPeak = 200
+
 // nextFrame pulls one 20 ms frame for the mixer: decoded audio, PLC for a
-// gap, or nil while (re)buffering.
+// gap, or nil while (re)buffering. When the buffer has crept above its
+// target (a burst of late packets), one silent frame per call is decoded and
+// discarded so latency drifts back down without an audible skip.
 func (p *peer) nextFrame() []int16 {
-	pkt, lost, ok := p.jb.pull()
-	if !ok {
-		return nil
+	for catchUp := true; ; catchUp = false {
+		pkt, lost, ok := p.jb.pull()
+		if !ok {
+			return nil
+		}
+		var pcm []int16
+		if lost {
+			pcm = p.dec.decodeLost()
+		} else {
+			pcm = p.dec.decode(pkt)
+		}
+		if catchUp && !lost && p.jb.depth() > p.jb.target()+1 && isQuiet(pcm) {
+			p.jb.skip.Add(1)
+			continue
+		}
+		return pcm
 	}
-	if lost {
-		return p.dec.decodeLost()
+}
+
+func isQuiet(pcm []int16) bool {
+	for _, x := range pcm {
+		if x > quietPeak || x < -quietPeak {
+			return false
+		}
 	}
-	return p.dec.decode(pkt)
+	return true
 }
 
 func (p *peer) stats(since time.Duration) string {
