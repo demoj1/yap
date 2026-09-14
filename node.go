@@ -284,6 +284,7 @@ func (n *node) sendLoop() {
 func (n *node) mixLoop() {
 	mix := make([]int32, frameSize)
 	out := make([]int16, frameSize)
+	var lim limiter
 	for range n.audio.play.need {
 		for n.audio.play.len() < playTarget*frameSize {
 			clear(mix)
@@ -294,18 +295,13 @@ func (n *node) mixLoop() {
 					continue
 				}
 				got = true
-				v := int32(p.volume.Load())
 				p.level.observe(pcm)
-				for i, x := range pcm {
-					mix[i] += int32(x) * v / 100
-				}
+				mixInto(mix, pcm, p.volume.Load())
 			}
 			if !got {
 				break
 			}
-			for i, x := range mix {
-				out[i] = int16(max(-32768, min(32767, x)))
-			}
+			lim.apply(mix, out)
 			n.audio.spkPeak.observe(out)
 			n.audio.play.push(out)
 		}
