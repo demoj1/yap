@@ -46,7 +46,8 @@ type model struct {
 	noticeAt int
 	mic      meter
 	meters   map[*peer]*meter
-	cursor   int // selected row in the roster
+	cursor   int // selected tile in the roster
+	width    int // terminal columns, for the tile grid
 	logs     []string
 	frame    int
 }
@@ -69,16 +70,18 @@ func (m *meter) feed(db float64, frame int) {
 	}
 }
 
-func (m meter) String() string {
+func (m meter) String() string { return m.bar(meterLen) }
+
+func (m meter) bar(n int) string {
 	var b strings.Builder
-	lit := int(m.level*meterLen + 0.5)
-	hold := int(m.hold*meterLen + 0.5)
-	for i := 0; i < meterLen; i++ {
+	lit := int(m.level*float64(n) + 0.5)
+	hold := int(m.hold*float64(n) + 0.5)
+	for i := 0; i < n; i++ {
 		st := dim
 		switch {
-		case i < lit && i >= meterLen*5/6:
+		case i < lit && i >= n*5/6:
 			st = red
-		case i < lit && i >= meterLen*2/3:
+		case i < lit && i >= n*2/3:
 			st = yellow
 		case i < lit:
 			st = green
@@ -142,6 +145,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case noticeMsg:
 		m.notice, m.noticeAt = string(msg), m.frame
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyMsg:
 		ctl := m.n.ctl
 		peers := m.n.peerList()
@@ -189,12 +194,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+const (
+	tileW     = 24 // inner width of a roster tile
+	tileMeter = 20
+)
+
+var (
+	tileSt    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1).Width(tileW)
+	tileSelSt = tileSt.BorderForeground(lipgloss.Color("81"))
+	tileMeSt  = tileSt.BorderForeground(lipgloss.Color("42"))
+)
+
+// tile renders one participant as a bordered card: name, status, meter, volume.
+func tile(st lipgloss.Style, name, status string, mt meter, foot string) string {
+	body := fmt.Sprintf("%s %s\n%s\n%s", bold.Render(trunc(name, tileW-4)), status, mt.bar(tileMeter), foot)
+	return st.Render(body)
+}
+
+func trunc(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
 func (m model) View() string {
 	ctl := m.n.ctl
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  %s\n\n", linkSt.Render(m.n.link.String()))
 
-	mic := "mic"
+	mic := dim.Render("mic")
 	if ctl.muted.Load() {
 		mic = red.Render("MUTED")
 	}
@@ -202,35 +232,42 @@ func (m model) View() string {
 	if ctl.denoise.Load() {
 		dn = green.Render("denoise on")
 	}
-	fmt.Fprintf(&b, "    %s %s %s  %-6s tx %d kbps · %s\n",
-		green.Render("●"), bold.Render(pad(m.n.name)), m.mic, mic, ctl.bitrate.Load(), dn)
-	if m.n.set.Mic != "" || m.n.set.Out != "" {
-		fmt.Fprintf(&b, "      %s\n", dim.Render(fmt.Sprintf("mic %s · out %s", orDefault(m.n.set.Mic), orDefault(m.n.set.Out))))
-	}
-	b.WriteString("\n")
+	me := tile(tileMeSt, m.n.name+" (you)", mic, m.mic,
+		dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load()))+" "+dn)
 
 	peers := m.n.peerList()
-	if len(peers) == 0 {
-		fmt.Fprintf(&b, "    %s\n", dim.Render(spinner[m.frame%len(spinner)]+" waiting for friends"))
-	}
+	tiles := []string{me}
 	for i, p := range peers {
-		cur := "  "
-		name := pad(p.name)
+		st := tileSt
 		if i == m.cursor {
-			cur = selSt.Render("▸ ")
-			name = selSt.Render(name)
-		} else {
-			name = bold.Render(name)
+			st = tileSelSt
 		}
-		dot, note := yellow.Render("●"), yellow.Render(spinner[m.frame%len(spinner)]+" punching")
+		status := yellow.Render(spinner[m.frame%len(spinner)] + " punching")
 		if p.connected() {
-			dot, note = green.Render("●"), dim.Render(p.addr.Load().String())
+			status = green.Render("●") + " " + dim.Render(fmt.Sprintf("%.0f ms", float64(p.jitUS.Load())/1000))
 		}
 		var mt meter
 		if x := m.meters[p]; x != nil { // View can run before the tick that creates it
 			mt = *x
 		}
-		fmt.Fprintf(&b, "  %s%s %s %s  vol %3d%%  %s\n", cur, dot, name, mt, p.volume.Load(), note)
+		vol := fmt.Sprintf("vol %3d%%", p.volume.Load())
+		if i == m.cursor {
+			vol = selSt.Render("◂ " + vol + " ▸")
+		}
+		tiles = append(tiles, tile(st, p.name, status, mt, vol))
+	}
+
+	cols := max(1, (max(m.width, tileW+4)-2)/(tileW+3))
+	for i := 0; i < len(tiles); i += cols {
+		row := tiles[i:min(i+cols, len(tiles))]
+		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(lipgloss.JoinHorizontal(lipgloss.Top, row...)))
+		b.WriteString("\n")
+	}
+	if len(peers) == 0 {
+		fmt.Fprintf(&b, "\n  %s\n", dim.Render(spinner[m.frame%len(spinner)]+" waiting for friends — send them the link"))
+	}
+	if m.n.set.Mic != "" || m.n.set.Out != "" {
+		fmt.Fprintf(&b, "  %s\n", dim.Render(fmt.Sprintf("mic %s · out %s", orDefault(m.n.set.Mic), orDefault(m.n.set.Out))))
 	}
 	b.WriteString("\n")
 
