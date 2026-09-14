@@ -6,23 +6,30 @@ import (
 )
 
 const (
-	prebuf   = 3  // frames to collect before playout starts (60 ms)
-	maxDepth = 10 // frames; beyond that we skip ahead to cut latency
+	minPrebuf = 3  // frames of playout cushion in calm conditions (60 ms)
+	maxPrebuf = 8  // ceiling the buffer grows to during a jitter burst (160 ms)
+	maxDepth  = 16 // hard cap; beyond this we skip ahead so latency can't run away
+	relaxRuns = 12 // clean refills before the buffer shrinks one frame toward minPrebuf
 )
 
-// jitter reorders incoming Opus packets by sequence number.
+// jitter reorders incoming Opus packets by sequence number and adapts its
+// target depth: it grows after a rebuffer (network got bursty) and slowly
+// relaxes back to minPrebuf when refills are clean again, so the baseline
+// latency stays low but a bad patch doesn't keep gapping.
 type jitter struct {
 	mu      sync.Mutex
 	pkts    map[uint64][]byte
 	next    uint64
 	started bool
-	starve  int // consecutive pulls with an empty buffer; a few get PLC, more means rebuffer
+	prebuf  int // current target depth in frames
+	starve  int // consecutive empty pulls; a few get PLC, more forces a rebuffer
+	clean   int // consecutive in-order refills, for relaxing prebuf back down
 
 	lost, late, skip, rebuf, stall atomic.Uint64
 }
 
 func newJitter() *jitter {
-	return &jitter{pkts: map[uint64][]byte{}}
+	return &jitter{pkts: map[uint64][]byte{}, prebuf: minPrebuf}
 }
 
 func (j *jitter) push(seq uint64, pkt []byte) {
@@ -33,13 +40,13 @@ func (j *jitter) push(seq uint64, pkt []byte) {
 		return
 	}
 	j.pkts[seq] = pkt
-	if !j.started && len(j.pkts) >= prebuf {
+	if !j.started && len(j.pkts) >= j.prebuf {
 		j.started = true
 		j.next = j.minSeq()
 	}
 	if len(j.pkts) > maxDepth {
 		j.skip.Add(1)
-		j.next = j.maxSeq() - prebuf
+		j.next = j.maxSeq() - uint64(j.prebuf)
 		for s := range j.pkts {
 			if s < j.next {
 				delete(j.pkts, s)
@@ -62,13 +69,21 @@ func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 		j.starve = 0
 		delete(j.pkts, j.next)
 		j.next++
+		if j.clean++; j.clean >= relaxRuns && j.prebuf > minPrebuf {
+			j.prebuf--
+			j.clean = 0
+		}
 		return p, false, true
 	}
 	if len(j.pkts) == 0 {
 		j.starve++
-		if j.starve > prebuf {
+		if j.starve > j.prebuf {
 			j.started = false
 			j.starve = 0
+			j.clean = 0
+			if j.prebuf < maxPrebuf { // bursty network: hold more before next playout
+				j.prebuf++
+			}
 			j.rebuf.Add(1)
 			return nil, false, false
 		}
@@ -76,6 +91,7 @@ func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 		return nil, true, true
 	}
 	j.next++
+	j.clean = 0
 	j.lost.Add(1)
 	return nil, true, true
 }
@@ -84,6 +100,12 @@ func (j *jitter) depth() int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return len(j.pkts)
+}
+
+func (j *jitter) target() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.prebuf
 }
 
 func (j *jitter) minSeq() uint64 {
