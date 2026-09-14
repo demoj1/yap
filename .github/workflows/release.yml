@@ -113,14 +113,16 @@ jobs:
       - name: Build static libopus
         run: |
           curl -sSL https://downloads.xiph.org/releases/opus/opus-${OPUS_VERSION}.tar.gz | tar xz
-          PREFIX=$(cygpath -m "$PWD/opus-prefix") # native pkgconf/gcc need D:/... not /d/...
+          # Install into /mingw64 itself: it is already on pkgconf's and gcc's
+          # default search paths, so no PKG_CONFIG_PATH is needed (MSYS mangles
+          # a D:/... value in that variable when it enters the shell).
+          PREFIX=$(cygpath -m /mingw64)
           cmake -S opus-${OPUS_VERSION} -B opus-build -G "MinGW Makefiles" \
             -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_BUILD_TESTING=OFF \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release
           cmake --build opus-build -j
           cmake --install opus-build
-          ls "$PREFIX/lib/pkgconfig"
-          echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> $GITHUB_ENV
+          pkg-config --cflags --libs opus
 
       - name: Build yap (amd64)
         env:
