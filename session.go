@@ -220,9 +220,9 @@ func (s *session) punch(cands []string, timeout time.Duration) error {
 
 // stats reports counters plus the send rate since the previous call.
 func (s *session) stats(a *audio, since time.Duration) string {
-	line := fmt.Sprintf("tx %d %.1f kB/s  rx %d  jitter %.1f ms | jb depth %d lost %d late %d skip %d rebuf %d | period %d underrun %d capdrop %d",
+	line := fmt.Sprintf("tx %d %.1f kB/s  rx %d  jitter %.1f ms | jb depth %d lost %d stall %d late %d skip %d rebuf %d | period %d underrun %d capdrop %d",
 		s.tx.Load(), float64(s.txBytes.Swap(0))/1000/since.Seconds(), s.rx.Load(), float64(s.jitUS.Load())/1000,
-		s.jb.depth(), s.jb.lost.Load(), s.jb.late.Load(), s.jb.skip.Load(), s.jb.rebuf.Load(),
+		s.jb.depth(), s.jb.lost.Load(), s.jb.stall.Load(), s.jb.late.Load(), s.jb.skip.Load(), s.jb.rebuf.Load(),
 		a.period.Load(), a.play.underrun.Load(), a.capDrop.Load())
 	s.lastStats.Store(&line)
 	return line

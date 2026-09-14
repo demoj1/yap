@@ -20,7 +20,7 @@ type jitter struct {
 	starve  int // consecutive pulls with an empty buffer; a few get PLC, more means rebuffer
 	excess  int // consecutive pulls that left more than prebuf queued; long runs mean latency crept up
 
-	lost, late, skip, rebuf atomic.Uint64
+	lost, late, skip, rebuf, stall atomic.Uint64
 }
 
 func newJitter() *jitter {
@@ -50,8 +50,10 @@ func (j *jitter) push(seq uint64, pkt []byte) {
 	}
 }
 
-// pull returns the next packet in order. lost=true means a gap or a sender
-// running slow: the caller should run PLC. ok=false means (re)buffering.
+// pull returns the next packet in order. lost=true means the caller should
+// run PLC: either a real gap (next advances) or the sender is late (stall:
+// next stays, so the frame is played when it arrives instead of dropped).
+// ok=false means (re)buffering.
 func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -83,6 +85,8 @@ func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 			j.rebuf.Add(1)
 			return nil, false, false
 		}
+		j.stall.Add(1)
+		return nil, true, true
 	}
 	j.next++
 	j.lost.Add(1)

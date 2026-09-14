@@ -63,15 +63,18 @@ func TestGapIsLoss(t *testing.T) {
 	}
 }
 
-func TestSlowSenderGetsPLC(t *testing.T) {
+func TestSlowSenderStalls(t *testing.T) {
 	j := newJitter()
 	fill(j)
 	if s, _ := pull(t, j); s != -2 {
 		t.Fatal("first empty pull must be PLC")
 	}
-	push(j, prebuf+1)
-	if s, _ := pull(t, j); s != prebuf+1 {
-		t.Fatalf("stream continues after PLC, want %d got %d", prebuf+1, s)
+	push(j, prebuf)
+	if s, _ := pull(t, j); s != prebuf {
+		t.Fatalf("late frame must still be played, want %d got %d", prebuf, s)
+	}
+	if j.stall.Load() != 1 || j.lost.Load() != 0 {
+		t.Fatalf("stall 1 lost 0 expected, got stall %d lost %d", j.stall.Load(), j.lost.Load())
 	}
 }
 
