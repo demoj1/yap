@@ -31,10 +31,12 @@ there is no relay.
 
 ## Download
 
-Each tagged release has prebuilt binaries: `yap-macos` (universal) and
-`yap-linux-amd64`. Grab one, `chmod +x`, run. On macOS a browser download is
-quarantined — fetch it with `curl -L` or clear it with
-`xattr -d com.apple.quarantine yap-macos`.
+Each tagged release has prebuilt binaries: `yap-macos` (universal),
+`yap-linux-amd64` and `yap-windows-amd64.exe`. Grab one, `chmod +x` (not on
+Windows), run it in a terminal — Windows Terminal or PowerShell is fine, no
+extra window needed. On macOS a browser download is quarantined — fetch it
+with `curl -L` or clear it with `xattr -d com.apple.quarantine yap-macos`.
+Everyone in a call must run the same version.
 
 ## Build
 
