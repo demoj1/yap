@@ -101,10 +101,16 @@ func (n *node) rendezvous() {
 }
 
 func (n *node) announce() {
+	prev := n.pub.Load()
 	if pub, err := n.publicAddr(); err == nil {
 		n.pub.Store(pub)
+	} else if prev == nil {
+		log.Println("stun:", err, "— only LAN addresses will be announced")
 	}
 	h := hello{ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load())}
+	if cur := n.pub.Load(); prev == nil || cur == nil || cur.String() != prev.String() {
+		log.Println("you are at", h.Addrs)
+	}
 	if err := n.room.say(h); err != nil {
 		log.Println("rendezvous:", err)
 	}
