@@ -17,11 +17,9 @@ const (
 )
 
 type (
-	tickMsg    time.Time
-	logMsg     string
-	stateMsg   struct{ st, peer string }
-	sessionMsg struct{ s *session }
-	noticeMsg  string
+	tickMsg   time.Time
+	logMsg    string
+	noticeMsg string
 )
 
 var (
@@ -32,10 +30,11 @@ var (
 	red    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	linkSt = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
 	keySt  = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	selSt  = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
 )
 
-// ui is the bubbletea front end; it implements view so the node can report
-// into it from other goroutines.
+// ui is the bubbletea front end. The node does not push state into it: on
+// every tick the model reads the roster and levels straight from the node.
 type ui struct {
 	prog *tea.Program
 }
@@ -45,10 +44,9 @@ type model struct {
 	logPath  string
 	notice   string
 	noticeAt int
-	st, peer string
-	s        *session
-	mic, spk meter
-	stats    string
+	mic      meter
+	meters   map[*peer]*meter
+	cursor   int // selected row in the roster
 	logs     []string
 	frame    int
 }
@@ -99,7 +97,7 @@ func (m meter) String() string {
 
 func newUI(n *node, logPath string) *ui {
 	u := &ui{}
-	u.prog = tea.NewProgram(model{n: n, logPath: logPath}, tea.WithAltScreen())
+	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}}, tea.WithAltScreen())
 	return u
 }
 
@@ -110,9 +108,6 @@ func (u *ui) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (u *ui) state(st, peer string) { u.prog.Send(stateMsg{st, peer}) }
-func (u *ui) session(s *session)    { u.prog.Send(sessionMsg{s}) }
-
 func (m model) Init() tea.Cmd { return tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) }) }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -120,11 +115,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.frame++
 		m.mic.feed(m.n.audio.micPeak.take(), m.frame)
-		m.spk.feed(m.n.audio.spkPeak.take(), m.frame)
-		if m.s != nil {
-			if p := m.s.lastStats.Load(); p != nil {
-				m.stats = *p
+		peers := m.n.peerList()
+		alive := map[*peer]bool{}
+		for _, p := range peers {
+			alive[p] = true
+			mt := m.meters[p]
+			if mt == nil {
+				mt = &meter{}
+				m.meters[p] = mt
 			}
+			mt.feed(p.level.take(), m.frame)
+		}
+		for p := range m.meters {
+			if !alive[p] {
+				delete(m.meters, p)
+			}
+		}
+		if m.cursor >= len(peers) {
+			m.cursor = max(0, len(peers)-1)
 		}
 		return m, tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) })
 	case logMsg:
@@ -132,21 +140,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.logs) > logLines {
 			m.logs = m.logs[len(m.logs)-logLines:]
 		}
-	case stateMsg:
-		m.st, m.peer = msg.st, msg.peer
-	case sessionMsg:
-		m.s, m.stats = msg.s, ""
 	case noticeMsg:
 		m.notice, m.noticeAt = string(msg), m.frame
 	case tea.KeyMsg:
 		ctl := m.n.ctl
+		peers := m.n.peerList()
+		var sel *peer
+		if m.cursor < len(peers) {
+			sel = peers[m.cursor]
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "up", "k":
-			m.n.setPeerVolume(int(min(200, ctl.volume.Load()+10)))
+			m.cursor = max(0, m.cursor-1)
 		case "down", "j":
-			m.n.setPeerVolume(int(max(0, ctl.volume.Load()-10)))
+			m.cursor = min(max(0, len(peers)-1), m.cursor+1)
+		case "right", "l":
+			if sel != nil {
+				m.n.setVolume(sel, int(min(200, sel.volume.Load()+10)))
+			}
+		case "left", "h":
+			if sel != nil {
+				m.n.setVolume(sel, int(max(0, sel.volume.Load()-10)))
+			}
 		case "m":
 			ctl.muted.Store(!ctl.muted.Load())
 		case "d":
@@ -185,34 +202,40 @@ func (m model) View() string {
 	if ctl.denoise.Load() {
 		dn = green.Render("denoise on")
 	}
-	fmt.Fprintf(&b, "  %s %s %s  %-6s tx %d kbps · %s\n",
+	fmt.Fprintf(&b, "    %s %s %s  %-6s tx %d kbps · %s\n",
 		green.Render("●"), bold.Render(pad(m.n.name)), m.mic, mic, ctl.bitrate.Load(), dn)
 	if m.n.set.Mic != "" || m.n.set.Out != "" {
-		fmt.Fprintf(&b, "  %s\n", dim.Render(fmt.Sprintf("mic %s · out %s", orDefault(m.n.set.Mic), orDefault(m.n.set.Out))))
+		fmt.Fprintf(&b, "      %s\n", dim.Render(fmt.Sprintf("mic %s · out %s", orDefault(m.n.set.Mic), orDefault(m.n.set.Out))))
 	}
+	b.WriteString("\n")
 
-	dot, peer, note := dim.Render("○"), dim.Render(pad("—")), ""
-	switch m.st {
-	case "waiting":
-		note = dim.Render(spinner[m.frame%len(spinner)] + " waiting for a friend")
-	case "calling":
-		note = dim.Render(spinner[m.frame%len(spinner)] + " calling")
-	case "punching":
-		dot, peer = yellow.Render("●"), bold.Render(pad(m.peer))
-		note = yellow.Render(spinner[m.frame%len(spinner)] + " punching NAT")
-	case "connected":
-		dot, peer = green.Render("●"), bold.Render(pad(m.peer))
-		if m.s != nil {
-			note = green.Render("connected ") + dim.Render(m.s.peer.Load().String())
+	peers := m.n.peerList()
+	if len(peers) == 0 {
+		fmt.Fprintf(&b, "    %s\n", dim.Render(spinner[m.frame%len(spinner)]+" waiting for friends"))
+	}
+	for i, p := range peers {
+		cur := "  "
+		name := pad(p.name)
+		if i == m.cursor {
+			cur = selSt.Render("▸ ")
+			name = selSt.Render(name)
+		} else {
+			name = bold.Render(name)
 		}
+		dot, note := yellow.Render("●"), yellow.Render(spinner[m.frame%len(spinner)]+" punching")
+		if p.connected() {
+			dot, note = green.Render("●"), dim.Render(p.addr.Load().String())
+		}
+		var mt meter
+		if x := m.meters[p]; x != nil { // View can run before the tick that creates it
+			mt = *x
+		}
+		fmt.Fprintf(&b, "  %s%s %s %s  vol %3d%%  %s\n", cur, dot, name, mt, p.volume.Load(), note)
 	}
-	fmt.Fprintf(&b, "  %s %s %s  vol %3d%%  %s\n\n", dot, peer, m.spk, ctl.volume.Load(), note)
+	b.WriteString("\n")
 
-	if m.stats != "" {
-		fmt.Fprintf(&b, "  %s\n\n", dim.Render(m.stats))
-	}
-	fmt.Fprintf(&b, "  %s volume  %s mute  %s denoise  %s bitrate  %s mic  %s out  %s quit\n",
-		keySt.Render("↑/↓"), keySt.Render("m"), keySt.Render("d"), keySt.Render("+/-"),
+	fmt.Fprintf(&b, "  %s pick  %s volume  %s mute  %s denoise  %s bitrate  %s mic  %s out  %s quit\n",
+		keySt.Render("↑/↓"), keySt.Render("←/→"), keySt.Render("m"), keySt.Render("d"), keySt.Render("+/-"),
 		keySt.Render("i"), keySt.Render("o"), keySt.Render("q"))
 	if m.notice != "" && m.frame-m.noticeAt < 90 {
 		fmt.Fprintf(&b, "  %s\n", yellow.Render(m.notice))

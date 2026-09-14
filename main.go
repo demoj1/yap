@@ -57,37 +57,30 @@ func main() {
 	fs.Usage = usage
 	fs.Parse(os.Args[2:])
 
-	n := &node{name: *name, ctl: &controls{}, set: set}
-	n.ctl.bitrate.Store(int32(set.Bitrate))
-	n.ctl.volume.Store(100)
-	denoise := set.Denoise
-	if *nodenoise {
-		denoise = false
-	}
-	n.ctl.denoise.Store(denoise)
+	ctl := &controls{}
+	ctl.bitrate.Store(int32(set.Bitrate))
+	ctl.denoise.Store(set.Denoise && !*nodenoise)
 
-	var run func()
+	var l link
 	switch os.Args[1] {
 	case "listen":
 		if fs.NArg() != 0 {
 			usage()
 		}
-		n.link = loadOrCreateLink(*rotate)
-		run = n.listenForever
+		l = loadOrCreateLink(*rotate)
 	case "join":
 		if fs.NArg() != 1 {
 			usage()
 		}
-		l, err := parseLink(fs.Arg(0))
-		if err != nil {
+		var err error
+		if l, err = parseLink(fs.Arg(0)); err != nil {
 			log.Fatal(err)
 		}
-		n.link = l
 		*port = 0
-		run = n.joinForever
 	default:
 		usage()
 	}
+	n := newNode(l, *name, ctl, set)
 
 	logFile, logPath := openLog()
 	defer logFile.Close()
@@ -100,7 +93,6 @@ func main() {
 	}
 	n.conn = conn
 	log.Println("link", n.link)
-	log.Println("you are at", candidates(conn))
 	if *mic != set.Mic || *out != set.Out {
 		set.Mic, set.Out = *mic, *out
 		set.save()
@@ -110,18 +102,15 @@ func main() {
 		log.Fatal("audio:", err)
 	}
 	defer n.audio.Close()
-	go n.sendLoop()
 
 	if *plain {
 		fmt.Printf("\n  %s\n\n", n.link)
-		n.view = plainView{}
-		run()
+		n.run()
 		return
 	}
 	ui := newUI(n, logPath)
 	log.SetOutput(io.MultiWriter(logFile, ui))
-	n.view = ui
-	go run()
+	go n.run()
 	if err := ui.Run(); err != nil {
 		log.Fatal(err)
 	}

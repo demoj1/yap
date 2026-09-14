@@ -17,10 +17,12 @@ import (
 
 const ntfy = "https://ntfy.sh/"
 
-// hello is what each side publishes to the rendezvous topic: its role and
-// every address it might be reachable at (LAN + STUN-mapped public).
+// hello is what every participant publishes to the room: who they are for
+// this run (ID + Nonce), their name, and every address they might be
+// reachable at (LAN + STUN-mapped public). Everyone is symmetric: seeing a
+// hello from an unknown ID means "punch to them".
 type hello struct {
-	Role  uint32   `json:"role"`
+	ID    []byte   `json:"id"`
 	Name  string   `json:"name"`
 	Nonce []byte   `json:"nonce"`
 	Addrs []string `json:"addrs"`
@@ -62,9 +64,9 @@ func (r *room) say(h hello) error {
 	return nil
 }
 
-// listen streams hellos from the other side. It returns once the
-// subscription is open, so a say() after it cannot be missed.
-func (r *room) listen(ctx context.Context, want uint32) (<-chan hello, error) {
+// listen streams every hello in the room, including our own. It returns
+// once the subscription is open, so a say() after it cannot be missed.
+func (r *room) listen(ctx context.Context) (<-chan hello, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", ntfy+r.topic+"/json", nil)
 	if err != nil {
 		panic(err)
@@ -94,7 +96,7 @@ func (r *room) listen(ctx context.Context, want uint32) (<-chan hello, error) {
 			if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Event != "message" {
 				continue
 			}
-			if h, ok := r.open(ev.Message); ok && h.Role == want {
+			if h, ok := r.open(ev.Message); ok {
 				out <- h
 			}
 		}
@@ -119,8 +121,8 @@ func (r *room) open(msg string) (hello, bool) {
 }
 
 // candidates lists where this socket can be reached: every LAN IPv4 plus
-// the STUN-mapped public address.
-func candidates(conn *net.UDPConn) []string {
+// the STUN-mapped public address, if known.
+func candidates(conn *net.UDPConn, pub *net.UDPAddr) []string {
 	port := conn.LocalAddr().(*net.UDPAddr).Port
 	var out []string
 	ifaces, _ := net.Interfaces()
@@ -135,7 +137,7 @@ func candidates(conn *net.UDPConn) []string {
 			}
 		}
 	}
-	if pub, err := publicAddr(conn); err == nil {
+	if pub != nil {
 		out = append(out, pub.String())
 	}
 	return out

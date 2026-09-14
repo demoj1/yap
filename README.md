@@ -1,19 +1,24 @@
 # yap
 
-One-to-one voice call from the terminal. No accounts, no servers, no UI.
+Group voice call from the terminal. No accounts, no servers, no UI.
+Everyone who has the link joins a full mesh: each participant talks to
+every other directly; you hear all of them mixed, each at their own volume.
 
 ```
 yap listen              # prints yap://<secret> — send it to a friend; the link survives restarts
 yap join yap://...      # friend runs this
 ```
 
-Both ends get a TUI: level meters, `↑/↓` friend volume, `m` mute, `d` RNNoise
-on/off, `+/-` Opus bitrate (12–160 kbps, live), `q` quit. `-name` sets what the
-friend sees, `-plain` gives logs instead of the TUI. A dropped call goes back
-to waiting/redialing by itself. `yap devices` lists microphones and speakers; `-mic` / `-out` pick one by
-name or unique prefix and are remembered, and `i` / `o` in the TUI switch them
-live mid-call. Per-friend volume, bitrate and the
-denoise toggle persist in `<config dir>/yap/settings.json`. Everything is also logged to
+Everyone gets a TUI with a roster: a level meter per person, `↑/↓` to pick
+someone, `←/→` their volume, `m` mute yourself, `d` RNNoise on/off, `+/-` your
+Opus bitrate (12–160 kbps, live), `q` quit. `-name` sets what others see,
+`-plain` gives logs instead of the TUI. People who drop out (10 s silence)
+vanish from the roster and reappear when they come back; everyone
+re-announces every 20 s so latecomers find the whole group. `yap devices` lists
+microphones and speakers; `-mic` / `-out` pick one by name or unique prefix and
+are remembered, and `i` / `o` in the TUI switch them live mid-call. Per-person
+volume (by name), bitrate and the denoise toggle persist in
+`<config dir>/yap/settings.json`. Everything is also logged to
 `<config dir>/yap/yap.log` (`~/.config/yap` on Linux, `~/Library/Application Support/yap`
 on macOS) — send that when something goes wrong.
 
