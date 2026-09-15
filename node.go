@@ -139,6 +139,7 @@ func (n *node) pingLoop() {
 				n.sendTo(p, stampPayload(typPing, time.Now().UnixNano()))
 			}
 		}
+		n.sendState()
 	}
 }
 
@@ -510,6 +511,28 @@ func (n *node) deliver(p *peer, from *net.UDPAddr, plain []byte) {
 		p.accept(from, 0, nil)
 		if ts, ok := parseStamp(plain); ok {
 			p.gotPong(ts)
+		}
+	case typState:
+		p.accept(from, 0, nil)
+		if len(plain) == 2 {
+			p.muted.Store(plain[1]&stateMuted != 0)
+		}
+	}
+}
+
+// sendState tells every connected peer whether our mic is off right now, so
+// their tile of us can say so. Called on every change and once a second.
+func (n *node) sendState() {
+	if n.relay {
+		return
+	}
+	var flags byte
+	if n.ctl.silenced() {
+		flags |= stateMuted
+	}
+	for _, p := range n.peerList() {
+		if p.connected() && !p.relay {
+			n.sendTo(p, []byte{typState, flags})
 		}
 	}
 }

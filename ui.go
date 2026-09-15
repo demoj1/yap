@@ -424,18 +424,24 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 		return m.step("bitrate", false)
 	case "m":
 		ctl.muted.Store(!ctl.muted.Load())
+		m.n.sendState()
 		return m.note("mic " + map[bool]string{true: "MUTED", false: "on"}[ctl.muted.Load()]), nil
 	case "p":
 		ctl.ptt.Store(!ctl.ptt.Load())
 		m.n.set.PTT = ctl.ptt.Load()
 		m.n.set.save()
+		m.n.sendState()
 		if ctl.ptt.Load() {
 			return m.note("push-to-talk on — hold space to speak"), nil
 		}
 		return m.note("push-to-talk off — mic is open"), nil
 	case " ":
 		if ctl.ptt.Load() {
+			wasTalking := ctl.talking()
 			ctl.pressTalk()
+			if !wasTalking {
+				m.n.sendState()
+			}
 		}
 	case "c":
 		copyToClipboard(m.n.link.String())
@@ -511,7 +517,8 @@ type geometry struct {
 	linkRow                             int   // a click on the link copies it
 	ctl                                 []seg // toggles, actions and the update prompt, each on its row
 	dev                                 [2]devBox
-	tune                                devBox // the tuning tile: wheel turns a row, click left/right of the middle turns it down/up
+	tune                                devBox   // the tuning tile: wheel turns the row under the pointer
+	arrows                              [][2]int // per knob row: x of its ◂ and ▸
 }
 
 const (
@@ -670,14 +677,17 @@ func (m model) render() ([]string, geometry) {
 
 	// Tuning tile: the echo canceller knobs, one per row, saved as they turn.
 	knobs := m.knobs()
-	rows := []string{bold.Render("tuning") + dim.Render("   tab picks · [ ] turn · wheel/click")}
+	rows := []string{bold.Render("tuning") + dim.Render("   tab picks · [ ] or ◂ ▸ turn")}
+	g.arrows = g.arrows[:0]
 	for i, k := range knobs {
-		val := fmt.Sprintf("%d %s", k.get(), k.unit)
-		pad := strings.Repeat(" ", max(1, dw-4-len([]rune(k.name))-len(val)))
+		val := fmt.Sprintf("◂ %d %s ▸", k.get(), k.unit)
+		pad := strings.Repeat(" ", max(1, dw-2-len([]rune(k.name))-len([]rune(val))))
+		left := leftPad + 2 + len([]rune(k.name)) + len(pad) // content starts after border + padding
+		g.arrows = append(g.arrows, [2]int{left, left + len([]rune(val)) - 1})
 		if i == m.tune {
-			rows = append(rows, selSt.Render("▸ "+k.name+pad+val))
+			rows = append(rows, k.name+pad+selSt.Render(val))
 		} else {
-			rows = append(rows, dim.Render("  "+k.name+pad+val))
+			rows = append(rows, dim.Render(k.name+pad+val))
 		}
 	}
 	g.tune = devBox{len(lines), leftPad, leftPad + stride, len(knobs)}
@@ -780,6 +790,9 @@ func (m model) peerTile(p *peer, i, w int) string {
 			path = "◐"
 		}
 		status = green.Render(path) + " " + dim.Render(rttText(p))
+		if p.muted.Load() {
+			status = red.Render("muted") + " " + status
+		}
 	}
 	var mt meter
 	if x := m.meters[p]; x != nil {
@@ -816,11 +829,12 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case wheel:
 			m.wheelAt = m.frame
 			return m.turn(-1)
-		case e.X < (t.x0+t.x1)/2:
+		case e.X <= g.arrows[m.tune][0]+1: // on or next to ◂
 			return m.turn(-1)
-		default:
+		case e.X >= g.arrows[m.tune][1]-1: // on or next to ▸
 			return m.turn(+1)
 		}
+		return m, nil // a click on the name just selects the row
 	}
 	if !wheel { // a device row?
 		for i, d := range g.dev {
