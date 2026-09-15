@@ -92,6 +92,7 @@ type peer struct {
 	rx, tx   atomic.Uint64
 	txBytes  atomic.Uint64
 	rxBytes  atomic.Uint64 // audio bytes from them: their bitrate as we see it
+	talkMS   atomic.Int64  // milliseconds of non-silent frames heard from them: their talk time
 	rxLogged uint64        // rxBytes at the last stats line (statsLoop only)
 	rttUS    atomic.Int64  // smoothed ping round trip, microseconds; 0 until the first pong
 	jitUS    atomic.Int64  // RFC 3550 style interarrival jitter, microseconds
@@ -246,6 +247,17 @@ func (p *peer) nextFrame() []int16 {
 		}
 		return pcm
 	}
+}
+
+const frameMS = 20
+
+// talkText formats talk time as m:ss (h:mm:ss past an hour).
+func talkText(ms int64) string {
+	s := ms / 1000
+	if s >= 3600 {
+		return fmt.Sprintf("%d:%02d:%02d", s/3600, s%3600/60, s%60)
+	}
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
 }
 
 func isQuiet(pcm []int16) bool {

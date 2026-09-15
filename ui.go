@@ -581,7 +581,7 @@ func (m model) selfTile(w int) string {
 		head = red.Render("● MUTED")
 	}
 	return tile(tileMeSt, w, m.n.name+" (you)", head,
-		m.mic, dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load())))
+		m.mic, talkText(m.n.talkMS.Load()), dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load())))
 }
 
 func (m model) peerTile(p *peer, i, w int) string {
@@ -610,8 +610,7 @@ func (m model) peerTile(p *peer, i, w int) string {
 	if r := m.rates[p]; r != nil && r.kbps > 0 {
 		vol += dim.Render(fmt.Sprintf("  %.0f kbps", r.kbps))
 	}
-	vol += dim.Render("  " + verText(p))
-	return tile(st, w, p.name, status, mt, vol)
+	return tile(st, w, p.name, dim.Render(verText(p))+" "+status, mt, talkText(p.talkMS.Load()), vol)
 }
 
 // mouse maps clicks and wheel onto actions using the exact drawn geometry.
@@ -688,7 +687,7 @@ func (g geometry) tileAt(x, y int) (int, bool) {
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const (
-	tileMinW  = 30
+	tileMinW  = 34
 	tileExtra = 14
 )
 
@@ -698,12 +697,15 @@ var (
 	tileMeSt  = tileSt.BorderForeground(lipgloss.Color("42"))
 )
 
-func tile(st lipgloss.Style, w int, name, status string, mt meter, foot string) string {
+// tile draws one card: name + status, the VU bar with talk time at its
+// right, and a footer line.
+func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot string) string {
 	head := bold.Render(trunc(name, w-4))
 	if status != "" {
 		head += " " + status
 	}
-	return st.Width(w).Render(fmt.Sprintf("%s\n%s\n%s", head, mt.bar(w-6), foot))
+	talk = fmt.Sprintf("%8s", talk)
+	return st.Width(w).Render(fmt.Sprintf("%s\n%s %s\n%s", head, mt.bar(w-6-len(talk)-1), dim.Render(talk), foot))
 }
 
 // deviceTile lists devices under a hotkey-lit title, marking the one in use.

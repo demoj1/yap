@@ -32,14 +32,15 @@ var stunServers = []string{"stun.cloudflare.com:3478", "stun.l.google.com:19302"
 // microphone out to all of them and mixes everything it hears into one
 // playback stream.
 type node struct {
-	conn  *net.UDPConn
-	audio *audio
-	link  link
-	id    []byte // random per run; orders the pair direction bit
-	nonce []byte // random per run; halves of every pair key
-	name  string
-	ctl   *controls
-	set   *settings
+	conn   *net.UDPConn
+	audio  *audio
+	talkMS atomic.Int64 // milliseconds of non-silent frames we sent: our talk time
+	link   link
+	id     []byte // random per run; orders the pair direction bit
+	nonce  []byte // random per run; halves of every pair key
+	name   string
+	ctl    *controls
+	set    *settings
 
 	mu     sync.Mutex
 	peers  map[string]*peer // by string(id)
@@ -512,6 +513,9 @@ func (n *node) sendLoop() {
 		if n.ctl.gate.Load() && !n.ctl.muted.Load() && !g.pass(f) {
 			clear(f) // below the gate: send silence so speaker echo isn't transmitted
 		}
+		if !isQuiet(f) {
+			n.talkMS.Add(frameMS)
+		}
 		peers := n.peerList()
 		people := 0
 		for _, p := range peers {
@@ -581,6 +585,9 @@ func (n *node) mixLoop() {
 				}
 				got = true
 				p.level.observe(pcm)
+				if !isQuiet(pcm) {
+					p.talkMS.Add(frameMS)
+				}
 				mixInto(mix, pcm, p.volume.Load())
 			}
 			if !got {
