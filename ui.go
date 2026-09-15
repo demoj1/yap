@@ -103,6 +103,8 @@ type model struct {
 	height   int             // terminal rows: the log fills whatever the controls leave
 	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
 	outputs  []string
+	asked    bool // the update dialog was answered (either way)
+	doUpdate bool // the answer was yes: main updates and restarts after the TUI exits
 	logs     []string
 	frame    int
 }
@@ -201,7 +203,14 @@ func newUI(n *node, logPath string) *ui {
 	return u
 }
 
-func (u *ui) Run() error { _, err := u.prog.Run(); return err }
+// Run blocks until the user quits; true means they chose to update.
+func (u *ui) Run() (bool, error) {
+	final, err := u.prog.Run()
+	if err != nil {
+		return false, err
+	}
+	return final.(model).doUpdate, nil
+}
 
 // Write feeds log lines to the screen. The periodic per-peer stats stay in
 // the file only: the status bar and tiles show them live, and on screen
@@ -317,6 +326,16 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "y", "n":
+		if m.n.update.Load() == nil || m.asked {
+			return m, nil
+		}
+		m.asked = true
+		if key == "n" {
+			return m.note("staying on " + version + " — run yap update whenever"), nil
+		}
+		m.doUpdate = true
+		return m, tea.Quit
 	case "up", "k":
 		m.cursor = max(0, m.cursor-1)
 	case "down", "j":
@@ -388,8 +407,8 @@ type seg struct {
 // same layout that was drawn.
 type geometry struct {
 	tileTop, tileH, stride, cols, tiles int
-	togglesRow, actionsRow              int
-	toggles, actions                    []seg
+	togglesRow, actionsRow, promptRow   int
+	toggles, actions, prompt            []seg
 	devTop, devStride                   int // device tiles: rows start 2 below the top (border + title)
 	devRows                             [2]int
 }
@@ -410,8 +429,18 @@ func (m model) render() ([]string, geometry) {
 
 	add("")
 	add("  " + linkSt.Render(m.n.link.String()))
-	if u := m.n.update.Load(); u != nil {
-		add("  " + yellow.Render(*u))
+	g.promptRow = -1
+	if tag := m.n.update.Load(); tag != nil {
+		if m.asked {
+			add("  " + dim.Render(*tag+" is out — yap update"))
+		} else { // the dialog: y updates and restarts into the same room, n dismisses
+			g.promptRow = len(lines)
+			lead := fmt.Sprintf("⬆ %s available (you run %s) — update now?   ", *tag, version)
+			yes, no := "[y] yes", "[n] later"
+			x := leftPad + len([]rune(lead))
+			g.prompt = []seg{{x, x + len(yes), "y", ""}, {x + len(yes) + 3, x + len(yes) + 3 + len(no), "n", ""}}
+			add("  " + yellow.Render(lead) + hotSt.Render(yes) + "   " + hotSt.Render(no))
+		}
 	}
 	peers := m.people()
 	add("  " + m.statusBar(peers))
@@ -665,6 +694,9 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil, false
+	}
+	if mm, cmd, ok := hit(g.promptRow, g.prompt); ok {
+		return mm, cmd
 	}
 	if mm, cmd, ok := hit(g.togglesRow, g.toggles); ok {
 		return mm, cmd

@@ -145,10 +145,10 @@ func main() {
 	defer n.audio.Close()
 	n.audio.aecOn.Store(ctl.aec.Load())
 	log.Println("audio:", n.audio.describe())
-	go func() { // never blocks startup; the TUI shows it and the log keeps it
-		if hint := checkUpdate(); hint != "" {
-			n.update.Store(&hint)
-			log.Println(hint)
+	go func() { // never blocks startup; the TUI asks, the log keeps it
+		if tag := checkUpdate(); tag != "" {
+			n.update.Store(&tag)
+			log.Printf("update available: %s (you run %s) — yap update", tag, version)
 		}
 	}()
 	log.Printf("buffers: jitter %d–%d frames (%d–%d ms) · playback %d frames · peer timeout %s",
@@ -162,8 +162,19 @@ func main() {
 	ui := newUI(n, logPath)
 	log.SetOutput(io.MultiWriter(logFile, ui))
 	go n.run()
-	if err := ui.Run(); err != nil {
+	wantUpdate, err := ui.Run()
+	if err != nil {
 		log.Fatal(err)
+	}
+	if wantUpdate { // chosen in the TUI: swap the binary and come back into the same room
+		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+		n.audio.Close()
+		if err := selfUpdate(); err != nil {
+			log.Fatal("update: ", err)
+		}
+		if err := restart(); err != nil {
+			log.Fatal("restart: ", err)
+		}
 	}
 }
 

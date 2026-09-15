@@ -87,13 +87,33 @@ func assetName() string {
 	}
 }
 
-// checkUpdate returns a one-line hint when a newer release exists, or "".
+// checkUpdate returns the tag of a newer release, or "".
 func checkUpdate() string {
 	r, err := latestRelease()
 	if err != nil || !newerThan(r.Tag, version) {
 		return ""
 	}
-	return fmt.Sprintf("update available: %s (you run %s) — quit and run: yap update", r.Tag, version)
+	return r.Tag
+}
+
+// restart replaces this process with the (freshly updated) executable,
+// same arguments, so the user lands back in the same room. Windows cannot
+// exec in place: there a new process is started and this one exits.
+func restart() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := syscall.Exec(exe, os.Args, os.Environ()); err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	p, err := os.StartProcess(exe, os.Args, &os.ProcAttr{Files: []*os.File{os.Stdin, os.Stdout, os.Stderr}})
+	if err != nil {
+		return err
+	}
+	p.Release()
+	os.Exit(0)
+	return nil
 }
 
 // selfUpdate downloads this platform's binary from the latest release and
@@ -182,14 +202,9 @@ func autoUpdate() {
 			log.Println("relay: update failed:", err)
 			continue
 		}
-		exe, err := os.Executable()
-		if err != nil {
-			log.Println("relay: restart failed:", err)
-			continue
-		}
 		log.Println("relay: restarting into", r.Tag)
-		if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
-			log.Println("relay: exec failed:", err)
+		if err := restart(); err != nil {
+			log.Println("relay: restart failed:", err)
 		}
 	}
 }
