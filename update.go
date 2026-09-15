@@ -15,7 +15,10 @@ import (
 	"time"
 )
 
-const releasesURL = "https://api.github.com/repos/demoj1/yap/releases/latest"
+const (
+	releasesURL = "https://api.github.com/repos/demoj1/yap/releases/latest"
+	updateDefer = 30 * time.Minute // a relay with people on it postpones its update this long at most
+)
 
 type release struct {
 	Tag    string `json:"tag_name"`
@@ -189,15 +192,26 @@ func download(url, path string) error {
 
 // autoUpdate runs in relay/daemon mode: every minute it checks for a newer
 // release, installs it in place, and re-execs so the daemon keeps itself
-// current with no attention. The binary must be on a writable path (a bind
-// mount, not baked into a read-only image) for the update to persist.
-func autoUpdate() {
+// current with no attention. A restart drops everyone routed through the
+// relay for ~10 s, so it waits for the room to be empty — at most
+// updateDefer, then it goes anyway. The binary must be on a writable path
+// (a bind mount, not baked into a read-only image) for the update to persist.
+func autoUpdate(busy func() bool) {
+	var pending time.Time // when we first saw the newer release
 	for range time.Tick(time.Minute) {
 		r, err := latestRelease()
 		if err != nil || !newerThan(r.Tag, version) {
+			pending = time.Time{}
 			continue
 		}
-		log.Println("relay: newer release", r.Tag, "— updating")
+		if pending.IsZero() {
+			pending = time.Now()
+			log.Println("relay: newer release", r.Tag, "— will update once the room is empty")
+		}
+		if busy() && time.Since(pending) < updateDefer {
+			continue
+		}
+		log.Println("relay: updating to", r.Tag)
 		if err := selfUpdate(); err != nil {
 			log.Println("relay: update failed:", err)
 			continue

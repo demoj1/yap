@@ -123,7 +123,14 @@ func (n *node) run() {
 // public, always-on host it is a stable relay hub and rendezvous anchor.
 func (n *node) runRelay() {
 	n.relay = true
-	go autoUpdate()
+	go autoUpdate(func() bool { // busy: anyone (not a relay) is connected through us right now
+		for _, p := range n.peerList() {
+			if !p.relay && p.connected() && p.silentFor() < peerTimeout {
+				return true
+			}
+		}
+		return false
+	})
 	go n.recvLoop()
 	go n.reaper()
 	go n.statsLoop()
