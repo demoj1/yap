@@ -15,10 +15,11 @@ import (
 var version = "dev" // set by -ldflags in CI
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `yap — one-to-one voice call, nothing else.
+	fmt.Fprintf(os.Stderr, `yap — voice call from the terminal, nothing else.
 
-  yap listen [-p 4444] [-new]     print a link, wait for a friend (link is kept across restarts)
-  yap join <link>                 call the friend
+  yap                             host a room: the link is copied, send it to friends
+  yap listen [-p 4444] [-new]     same, explicitly (link is kept across restarts; -new makes a fresh one)
+  yap join <link>                 join a friend's room
   yap relay [-p 4444] <link>      run as a headless relay hub (public, always-on box)
   yap devices                     list microphones and speakers
   yap reset                       forget saved devices/volumes, back to defaults
@@ -32,8 +33,8 @@ func usage() {
 
 func main() {
 	log.SetFlags(log.Ltime)
-	if len(os.Args) < 2 {
-		usage()
+	if len(os.Args) < 2 { // bare "yap" hosts a room: the one-command start
+		os.Args = append(os.Args, "listen")
 	}
 	if os.Args[1] == "devices" {
 		printDevices()
@@ -161,7 +162,12 @@ func main() {
 		n.run()
 		return
 	}
-	ui := newUI(n, logPath)
+	notice := ""
+	if os.Args[1] == "listen" { // the host's link is what friends need: hand it over right away
+		copyToClipboard(n.link.String())
+		notice = "your link is in the clipboard — send it to friends, they run: yap join <link>"
+	}
+	ui := newUI(n, logPath, notice)
 	log.SetOutput(io.MultiWriter(logFile, ui))
 	go n.run()
 	wantUpdate, err := ui.Run()

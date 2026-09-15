@@ -28,9 +28,10 @@ const (
 	typRelayed = 2 // [2][src id 8][inner packet]   from a relay: this came from src
 	typPing    = 3 // [3][unix nanos int64]          answer with a pong carrying the same stamp
 	typPong    = 4 // [4][unix nanos int64]
-	typState   = 5 // [5][flags]  bit 0: sender is muted (or push-to-talk idle); sent on change and once a second
+	typState   = 5 // [5][flags][link]  flags bit 0: sender is muted (or push-to-talk idle); link bit 0: sender hears us. Sent on change and once a second
 
 	stateMuted = 1
+	stateHears = 1
 )
 
 const (
@@ -97,6 +98,8 @@ type peer struct {
 	rxBytes  atomic.Uint64 // audio bytes from them: their bitrate as we see it
 	talkMS   atomic.Int64  // milliseconds of non-silent frames heard from them: their talk time
 	muted    atomic.Bool   // they told us their mic is off (mute or push-to-talk idle)
+	hearsUs  atomic.Bool   // their last state said our packets reach them
+	stateAt  atomic.Int64  // unix nanos of that state; 0 until a client new enough sends one
 	rxLogged uint64        // rxBytes at the last stats line (statsLoop only)
 	rttUS    atomic.Int64  // smoothed ping round trip, microseconds; 0 until the first pong
 	jitUS    atomic.Int64  // RFC 3550 style interarrival jitter, microseconds

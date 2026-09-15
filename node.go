@@ -35,12 +35,15 @@ type node struct {
 	conn   *net.UDPConn
 	audio  *audio
 	talkMS atomic.Int64 // milliseconds of non-silent frames we sent: our talk time
-	link   link
-	id     []byte // random per run; orders the pair direction bit
-	nonce  []byte // random per run; halves of every pair key
-	name   string
-	ctl    *controls
-	set    *settings
+
+	gateOpen atomic.Bool   // the noise gate let the last frame through
+	agcGain  atomic.Uint64 // float64 bits: the gain AGC applied to the last frame
+	link     link
+	id       []byte // random per run; orders the pair direction bit
+	nonce    []byte // random per run; halves of every pair key
+	name     string
+	ctl      *controls
+	set      *settings
 
 	mu     sync.Mutex
 	peers  map[string]*peer // by string(id)
@@ -514,14 +517,19 @@ func (n *node) deliver(p *peer, from *net.UDPAddr, plain []byte) {
 		}
 	case typState:
 		p.accept(from, 0, nil)
-		if len(plain) == 2 {
+		if len(plain) >= 2 {
 			p.muted.Store(plain[1]&stateMuted != 0)
+		}
+		if len(plain) >= 3 { // v0.8.4+: they also say whether our packets reach them
+			p.hearsUs.Store(plain[2]&stateHears != 0)
+			p.stateAt.Store(time.Now().UnixNano())
 		}
 	}
 }
 
-// sendState tells every connected peer whether our mic is off right now, so
-// their tile of us can say so. Called on every change and once a second.
+// sendState tells every connected peer whether our mic is off right now and
+// whether we have been hearing from them, so their tile of us can say
+// "muted" or "not heard". Called on every change and once a second.
 func (n *node) sendState() {
 	if n.relay {
 		return
@@ -531,9 +539,14 @@ func (n *node) sendState() {
 		flags |= stateMuted
 	}
 	for _, p := range n.peerList() {
-		if p.connected() && !p.relay {
-			n.sendTo(p, []byte{typState, flags})
+		if !p.connected() || p.relay {
+			continue
 		}
+		var link byte
+		if p.silentFor() < noReplyAfter {
+			link |= stateHears
+		}
+		n.sendTo(p, []byte{typState, flags, link})
 	}
 }
 
@@ -570,10 +583,14 @@ func (n *node) sendLoop() {
 		if n.ctl.agc.Load() && !quiet {
 			ag.process(f) // normalize outgoing loudness
 		}
+		n.agcGain.Store(math.Float64bits(ag.gain))
 		n.audio.micPeak.observe(f)
+		open := !quiet
 		if n.ctl.gate.Load() && !quiet && !g.pass(f) {
 			clear(f) // below the gate: send silence so speaker echo isn't transmitted
+			open = false
 		}
+		n.gateOpen.Store(open)
 		if !isQuiet(f) {
 			n.talkMS.Add(frameMS)
 		}

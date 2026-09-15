@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
@@ -257,9 +258,12 @@ func (m meter) bar(n int) string {
 	return b.String()
 }
 
-func newUI(n *node, logPath string) *ui {
+// newUI builds the screen; notice, if any, is shown for the first ~10 s.
+func newUI(n *node, logPath, notice string) *ui {
 	u := &ui{}
-	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}, seen: map[*peer]bool{}}, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m := model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}, seen: map[*peer]bool{},
+		notice: notice, noticeAt: 240} // a notice lives 60 frames past noticeAt: this one until frame 300
+	u.prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	return u
 }
 
@@ -611,23 +615,32 @@ func (m model) render() ([]string, geometry) {
 		line += shown + strings.Repeat(" ", gap)
 		x += len([]rune(plain)) + gap
 	}
-	// Toggles: always visible with explicit ON/off, so a keypress visibly flips one.
-	chip := func(key, name string, on, offRed bool) {
+	// Toggles: always visible with explicit ON/off, so a keypress visibly
+	// flips one; live shows what the switch is doing right now.
+	chip := func(key, name string, on, offRed bool, live string) {
 		sw, st := "○ off", dim
 		if on {
 			sw, st = "● on", green
 		} else if offRed {
 			st = red
 		}
-		put(name+" "+sw, hot(name, key)+" "+st.Render(sw), key, "", 4)
+		plain, shown := name+" "+sw, hot(name, key)+" "+st.Render(sw)
+		if on && live != "" {
+			plain, shown = plain+" "+live, shown+" "+dim.Render(live)
+		}
+		put(plain, shown, key, "", 4)
 	}
-	chip("m", "mic", !ctl.muted.Load(), true)
-	chip("d", "denoise", ctl.denoise.Load(), false)
-	chip("g", "gate", ctl.gate.Load(), false)
-	chip("e", "echo", ctl.aec.Load(), false)
-	chip("a", "gain", ctl.agc.Load(), false)
-	chip("l", "lock", m.n.locked.Load(), false)
-	chip("p", "ptt", ctl.ptt.Load(), false)
+	gateLive := "shut"
+	if m.n.gateOpen.Load() {
+		gateLive = "open"
+	}
+	chip("m", "mic", !ctl.muted.Load(), true, "")
+	chip("d", "denoise", ctl.denoise.Load(), false, "")
+	chip("g", "gate", ctl.gate.Load(), false, gateLive)
+	chip("e", "echo", ctl.aec.Load(), false, fmt.Sprintf("−%.0f dB", max(0, math.Float64frombits(m.n.audio.aecDB.Load()))))
+	chip("a", "gain", ctl.agc.Load(), false, fmt.Sprintf("×%.1f", math.Float64frombits(m.n.agcGain.Load())))
+	chip("l", "lock", m.n.locked.Load(), false, "")
+	chip("p", "ptt", ctl.ptt.Load(), false, "")
 	flush()
 
 	// Actions: arrow/sign ones show their keys in front; letter ones light
@@ -791,16 +804,24 @@ func (m model) peerTile(p *peer, i, w int) string {
 		if p.muted.Load() {
 			status = red.Render("muted") + " " + status
 		}
+		// They keep telling us whether our packets reach them; a fresh "no" means we talk into the void.
+		if at := p.stateAt.Load(); at != 0 && time.Since(time.Unix(0, at)) < noReplyAfter && !p.hearsUs.Load() {
+			status = red.Render("⚠ can't hear you") + " " + status
+		}
 	}
 	var mt meter
 	if x := m.meters[p]; x != nil {
 		mt = *x
 	}
-	vol := fmt.Sprintf("vol %3d%%", p.volume.Load())
+	// Volume as a slider: ten cells for 0–100 %, the number says the rest.
+	v := int(p.volume.Load())
+	lit := min(10, (v+5)/10)
+	bar := green.Render(strings.Repeat("▮", lit)) + dim.Render(strings.Repeat("▯", 10-lit))
+	vol := fmt.Sprintf("%s %3d%%", bar, v)
 	if i == m.cursor {
-		vol = selSt.Render("◂ " + vol + " ▸")
+		vol = selSt.Render("◂ ") + vol + selSt.Render(" ▸")
 	} else {
-		vol = dim.Render(vol)
+		vol = "  " + vol + "  "
 	}
 	if r := m.rates[p]; r != nil && r.kbps > 0 {
 		vol += dim.Render(fmt.Sprintf("  %.0f kbps", r.kbps))

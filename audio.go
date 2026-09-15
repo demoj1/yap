@@ -104,6 +104,15 @@ type audio struct {
 	aecTail int            // samples the current canceller was built with
 	aec     *aec.Canceller // echo canceller, fed in onData; nil until built
 	aecOn   atomic.Bool    // whether to run it
+	aecDB   atomic.Uint64  // float64 bits: smoothed dB the canceller took out of the mic lately
+}
+
+func sumSq(pcm []int16) float64 {
+	var s float64
+	for _, v := range pcm {
+		s += float64(v) * float64(v)
+	}
+	return s
 }
 
 // setAEC applies the echo canceller knobs: a new tail (ms) rebuilds the
@@ -203,9 +212,15 @@ func (a *audio) onData(out, in []byte, count uint32) {
 	a.spkPeak.observe(spk)
 	mic := s16(in, count)
 	if a.aecOn.Load() && int(count) == frameSize/2 {
+		before := sumSq(mic)
 		a.aecMu.Lock()
 		a.aec.Process(mic, spk) // remove what the speakers are playing from the mic
 		a.aecMu.Unlock()
+		if before > 1e6 { // only meaningful when there was something to cancel
+			db := 10 * math.Log10(before/(sumSq(mic)+1))
+			prev := math.Float64frombits(a.aecDB.Load())
+			a.aecDB.Store(math.Float64bits(prev + (db-prev)*0.1))
+		}
 	}
 	a.micPeak.observe(mic)
 	a.acc = append(a.acc, mic...)
