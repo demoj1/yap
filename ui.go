@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -34,7 +37,31 @@ var (
 	hotSt  = lipgloss.NewStyle().Bold(true)
 )
 
-const devRefresh = 150 // frames (~5 s) between device list refreshes
+const (
+	devRefresh   = 150             // frames (~5 s) between device list refreshes
+	noReplyAfter = 3 * time.Second // a connected peer silent this long is flagged on its tile
+)
+
+// copyToClipboard puts s on the clipboard every way that might work: OSC 52
+// through the terminal (wrapped for tmux, so it survives ssh), then the
+// first local clipboard tool found.
+func copyToClipboard(s string) {
+	seq := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x07"
+	if os.Getenv("TMUX") != "" {
+		seq = "\x1bPtmux;" + strings.ReplaceAll(seq, "\x1b", "\x1b\x1b") + "\x1b\\"
+	}
+	os.Stdout.WriteString(seq)
+	for _, tool := range [][]string{{"wl-copy"}, {"xclip", "-selection", "clipboard"}, {"xsel", "--clipboard", "--input"}, {"pbcopy"}, {"clip"}} {
+		if _, err := exec.LookPath(tool[0]); err != nil {
+			continue
+		}
+		cmd := exec.Command(tool[0], tool[1:]...)
+		cmd.Stdin = strings.NewReader(s)
+		if cmd.Run() == nil {
+			return
+		}
+	}
+}
 
 // hot renders word with its hotkey letter highlighted in place, so the key
 // is read off the label itself: "mic" with a lit m, "gain" with a lit a.
@@ -103,8 +130,9 @@ type model struct {
 	height   int             // terminal rows: the log fills whatever the controls leave
 	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
 	outputs  []string
-	asked    bool // the update dialog was answered (either way)
-	doUpdate bool // the answer was yes: main updates and restarts after the TUI exits
+	seen     map[*peer]bool // people heard from at least once: a new one chimes in, a vanished one chimes out
+	asked    bool           // the update dialog was answered (either way)
+	doUpdate bool           // the answer was yes: main updates and restarts after the TUI exits
 	logs     []string
 	frame    int
 }
@@ -199,7 +227,7 @@ func (m meter) bar(n int) string {
 
 func newUI(n *node, logPath string) *ui {
 	u := &ui{}
-	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}}, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}, seen: map[*peer]bool{}}, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	return u
 }
 
@@ -256,6 +284,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !alive[p] {
 				delete(m.meters, p)
 				delete(m.rates, p)
+			}
+		}
+		for _, p := range peers { // chimes: a person arriving or leaving
+			if !p.relay && p.connected() && !m.seen[p] {
+				m.seen[p] = true
+				m.n.cue(cueJoin)
+			}
+		}
+		for p := range m.seen {
+			if !alive[p] {
+				delete(m.seen, p)
+				m.n.cue(cueLeave)
 			}
 		}
 		if np := len(m.people()); m.cursor >= np {
@@ -351,6 +391,21 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 	case "m":
 		ctl.muted.Store(!ctl.muted.Load())
 		return m.note("mic " + map[bool]string{true: "MUTED", false: "on"}[ctl.muted.Load()]), nil
+	case "p":
+		ctl.ptt.Store(!ctl.ptt.Load())
+		m.n.set.PTT = ctl.ptt.Load()
+		m.n.set.save()
+		if ctl.ptt.Load() {
+			return m.note("push-to-talk on — hold space to speak"), nil
+		}
+		return m.note("push-to-talk off — mic is open"), nil
+	case " ":
+		if ctl.ptt.Load() {
+			ctl.pressTalk()
+		}
+	case "c":
+		copyToClipboard(m.n.link.String())
+		return m.note("link copied"), nil
 	case "d":
 		ctl.denoise.Store(!ctl.denoise.Load())
 		m.n.set.Denoise = ctl.denoise.Load()
@@ -408,6 +463,7 @@ type seg struct {
 type geometry struct {
 	tileTop, tileH, stride, cols, tiles int
 	togglesRow, actionsRow, promptRow   int
+	linkRow                             int // a click on the link copies it
 	toggles, actions, prompt            []seg
 	devTop, devStride                   int // device tiles: rows start 2 below the top (border + title)
 	devRows                             [2]int
@@ -428,7 +484,8 @@ func (m model) render() ([]string, geometry) {
 	add := func(s string) { lines = append(lines, s) }
 
 	add("")
-	add("  " + linkSt.Render(m.n.link.String()))
+	g.linkRow = len(lines)
+	add("  " + linkSt.Render(m.n.link.String()) + dim.Render("   c to copy"))
 	g.promptRow = -1
 	if tag := m.n.update.Load(); tag != nil {
 		if m.asked {
@@ -504,6 +561,7 @@ func (m model) render() ([]string, geometry) {
 	chip("e", "echo", ctl.aec.Load(), false)
 	chip("a", "gain", ctl.agc.Load(), false)
 	chip("l", "lock", m.n.locked.Load(), false)
+	chip("p", "ptt", ctl.ptt.Load(), false)
 	g.toggles = segs
 	add("  " + line)
 
@@ -526,6 +584,7 @@ func (m model) render() ([]string, geometry) {
 	action("+/-", "bitrate", "+", "-")
 	action("", "input", "i", "")
 	action("", "output", "o", "")
+	action("", "copy", "c", "")
 	action("", "quit", "q", "")
 	g.actions = segs
 	add("  " + line)
@@ -611,9 +670,14 @@ func (m model) statusBar(peers []*peer) string {
 
 func (m model) selfTile(w int) string {
 	ctl := m.n.ctl
-	head := "" // the name already says "(you)"; only a mute needs shouting
-	if ctl.muted.Load() {
+	head := "" // the name already says "(you)"; only a mute or push-to-talk needs a word
+	switch {
+	case ctl.muted.Load():
 		head = red.Render("● MUTED")
+	case ctl.ptt.Load() && ctl.talking():
+		head = green.Render("● TALK")
+	case ctl.ptt.Load():
+		head = dim.Render("○ hold space")
 	}
 	return tile(tileMeSt, w, m.n.name+" (you)", head,
 		m.mic, talkText(m.n.talkMS.Load()), dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load())))
@@ -625,7 +689,9 @@ func (m model) peerTile(p *peer, i, w int) string {
 		st = tileSelSt
 	}
 	status := yellow.Render(spinner[m.frame%len(spinner)] + " connecting")
-	if p.connected() {
+	if silent := p.silentFor(); p.connected() && silent > noReplyAfter {
+		status = red.Render(fmt.Sprintf("⚠ no reply %.0fs", silent.Seconds()))
+	} else if p.connected() {
 		path := "●"
 		if p.via.Load() != nil {
 			path = "◐"
@@ -695,6 +761,9 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil, false
 	}
+	if !wheel && e.Y == g.linkRow {
+		return m.act("c")
+	}
 	if mm, cmd, ok := hit(g.promptRow, g.prompt); ok {
 		return mm, cmd
 	}
@@ -746,7 +815,11 @@ const (
 // tile draws one card: name + status, the VU bar with talk time at its
 // right, and a footer line — wrapped in a halo that reacts to the voice.
 func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot string) string {
-	head := bold.Render(trunc(name, w-4))
+	nameSt := bold
+	if mt.level >= speakLvl {
+		nameSt = green.Bold(true) // the one talking stands out by name too
+	}
+	head := nameSt.Render(trunc(name, w-4))
 	if status != "" {
 		head += " " + status
 	}

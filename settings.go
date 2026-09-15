@@ -19,6 +19,7 @@ type settings struct {
 	Gate    bool           `json:"gate"`
 	AEC     bool           `json:"aec"`
 	AGC     bool           `json:"agc"`
+	PTT     bool           `json:"ptt"`               // push-to-talk: mic open only while space is held
 	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
 }
 

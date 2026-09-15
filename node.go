@@ -48,6 +48,7 @@ type node struct {
 	joined int64            // monotonic, so the roster keeps join order
 
 	stunCh  chan []byte // STUN replies, routed out of recvLoop
+	cues    chan int    // join/leave chimes queued for the mixer
 	pub     atomic.Pointer[net.UDPAddr]
 	room    *room
 	update  atomic.Pointer[string]          // "update available ..." once the check found a newer release
@@ -62,7 +63,43 @@ func newNode(l link, name string, ctl *controls, set *settings) *node {
 	return &node{link: l, name: name, ctl: ctl, set: set,
 		id: randBytes(8), nonce: randBytes(16),
 		peers: map[string]*peer{}, byAddr: map[string]*peer{},
-		stunCh: make(chan []byte, 4)}
+		stunCh: make(chan []byte, 4), cues: make(chan int, 8)}
+}
+
+const (
+	cueJoin  = 1
+	cueLeave = 2
+)
+
+// chime synthesizes the join (rising) or leave (falling) two-note cue:
+// 80 ms per note, 5 ms fades, about -15 dBFS.
+func chime(kind int) []int16 {
+	notes := [2]float64{660, 880}
+	if kind == cueLeave {
+		notes = [2]float64{880, 660}
+	}
+	const n, fade, amp = sampleRate * 80 / 1000, sampleRate * 5 / 1000, 6000
+	out := make([]int16, 0, 2*n)
+	for _, f := range notes {
+		for i := 0; i < n; i++ {
+			env := 1.0
+			if i < fade {
+				env = float64(i) / fade
+			} else if i > n-fade {
+				env = float64(n-i) / fade
+			}
+			out = append(out, int16(amp*env*math.Sin(2*math.Pi*f*float64(i)/sampleRate)))
+		}
+	}
+	return out
+}
+
+// cue queues a chime; dropped if the mixer is behind, a chime is not worth waiting for.
+func (n *node) cue(kind int) {
+	select {
+	case n.cues <- kind:
+	default:
+	}
 }
 
 // run blocks for the life of the process: it starts the socket/audio loops
@@ -500,17 +537,18 @@ func (n *node) sendLoop() {
 	bitrate := 0
 	var frame uint32 // audio frame number, shared by every peer's copy of this frame
 	for f := range n.audio.frames {
-		if n.ctl.muted.Load() {
+		quiet := n.ctl.silenced()
+		if quiet {
 			clear(f)
 		} else if n.ctl.denoise.Load() {
 			dn.Process(f[:rnnoise.FrameSize])
 			dn.Process(f[rnnoise.FrameSize:])
 		}
-		if n.ctl.agc.Load() && !n.ctl.muted.Load() {
+		if n.ctl.agc.Load() && !quiet {
 			ag.process(f) // normalize outgoing loudness
 		}
 		n.audio.micPeak.observe(f)
-		if n.ctl.gate.Load() && !n.ctl.muted.Load() && !g.pass(f) {
+		if n.ctl.gate.Load() && !quiet && !g.pass(f) {
 			clear(f) // below the gate: send silence so speaker echo isn't transmitted
 		}
 		if !isQuiet(f) {
@@ -571,10 +609,23 @@ func (n *node) mixLoop() {
 	mix := make([]int32, frameSize)
 	out := make([]int16, frameSize)
 	var lim limiter
+	var cue []int16 // pending chime samples, mixed in a frame at a time
+	cueFrame := make([]int16, frameSize)
 	for range n.audio.play.need {
 		for n.audio.play.len() < playTarget*frameSize {
 			clear(mix)
 			got := false
+			select {
+			case k := <-n.cues:
+				cue = append(cue, chime(k)...)
+			default:
+			}
+			if len(cue) > 0 {
+				clear(cueFrame)
+				cue = cue[copy(cueFrame, cue):]
+				mixInto(mix, cueFrame, 100)
+				got = true
+			}
 			for _, p := range n.peerList() {
 				if p.relay {
 					continue

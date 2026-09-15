@@ -75,6 +75,7 @@ func main() {
 	ctl.gate.Store(set.Gate && !*nogate)
 	ctl.aec.Store(set.AEC || *aecOn)
 	ctl.agc.Store(set.AGC && !*noagc)
+	ctl.ptt.Store(set.PTT)
 
 	var l link
 	relay := false

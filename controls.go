@@ -1,6 +1,14 @@
 package main
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
+
+// pttHold is how long one space keypress keeps the mic open in push-to-talk.
+// A held key auto-repeats faster than this, so holding space talks and
+// letting go closes the mic within this window.
+const pttHold = 600 * time.Millisecond
 
 var bitrates = []int{12, 16, 24, 32, 48, 64, 96, 128, 160} // kbps
 
@@ -13,7 +21,23 @@ type controls struct {
 	gate    atomic.Bool // noise gate on the send path: stay silent until you actually speak
 	aec     atomic.Bool // acoustic echo cancellation (SpeexDSP)
 	agc     atomic.Bool // automatic gain control: normalize outgoing loudness
+
+	ptt       atomic.Bool  // push-to-talk: silent unless space is being held
+	talkUntil atomic.Int64 // unix nanos until which the last space press keeps the mic open
 }
+
+// silenced reports whether the outgoing stream must carry silence right now:
+// muted, or push-to-talk without space held.
+func (c *controls) silenced() bool {
+	return c.muted.Load() || (c.ptt.Load() && !c.talking())
+}
+
+// talking reports whether space is currently held in push-to-talk.
+func (c *controls) talking() bool {
+	return time.Now().UnixNano() <= c.talkUntil.Load()
+}
+
+func (c *controls) pressTalk() { c.talkUntil.Store(time.Now().Add(pttHold).UnixNano()) }
 
 func (c *controls) stepBitrate(dir int) {
 	cur := int(c.bitrate.Load())
