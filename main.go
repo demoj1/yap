@@ -7,10 +7,12 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"syscall"
 )
 
 var version = "dev" // set by -ldflags in CI
@@ -41,6 +43,13 @@ func main() {
 		}
 		must(pprof.StartCPUProfile(f))
 		defer pprof.StopCPUProfile()
+		go func() { // a relay has no quit key: flush the profile on ctrl-c / SIGTERM too
+			c := make(chan os.Signal, 1)
+			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+			<-c
+			pprof.StopCPUProfile()
+			os.Exit(0)
+		}()
 	}
 	if len(os.Args) < 2 { // bare "yap" hosts a room: the one-command start
 		os.Args = append(os.Args, "listen")
