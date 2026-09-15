@@ -82,7 +82,8 @@ func parseAudio(plain []byte) (uint64, []byte, bool) {
 type peer struct {
 	id       []byte
 	name     string
-	relay    bool // announced itself as a relay: forwards for us, never speaks
+	relay    bool   // announced itself as a relay: forwards for us, never speaks
+	ver      string // their build, "" for anything before versions were announced
 	nonce    []byte
 	aead     cipher.AEAD
 	dir      uint32 // our sending direction toward this peer
@@ -124,7 +125,7 @@ func newPeer(l link, myID []byte, myNonce []byte, h hello) *peer {
 	if bytes.Compare(myID, h.ID) > 0 {
 		dir = 1
 	}
-	return &peer{id: h.ID, name: h.Name, relay: h.Relay, nonce: h.Nonce, aead: aead, dir: dir,
+	return &peer{id: h.ID, name: h.Name, relay: h.Relay, ver: h.Ver, nonce: h.Nonce, aead: aead, dir: dir,
 		jb: newJitter(), dec: newDecoder(),
 		ready: make(chan struct{}), gone: make(chan struct{})}
 }

@@ -160,7 +160,7 @@ func (n *node) announce() {
 	} else if prev == nil {
 		log.Println("stun:", err, "— only LAN addresses will be announced")
 	}
-	h := hello{Proto: proto, ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load()), Relay: n.relay}
+	h := hello{Proto: proto, ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load()), Relay: n.relay, Ver: version}
 	for _, p := range n.peerList() {
 		if p.direct() {
 			h.Reach = append(h.Reach, p.id)

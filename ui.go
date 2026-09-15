@@ -66,6 +66,14 @@ func (m model) relays() []*peer {
 	return out
 }
 
+// verText is a peer's announced build; anything older than that says so.
+func verText(p *peer) string {
+	if p.ver == "" {
+		return "<0.8"
+	}
+	return p.ver
+}
+
 // rttText is the round trip as shown next to a peer, "…" until the first pong.
 func rttText(p *peer) string {
 	if us := p.rttUS.Load(); us >= 1000 {
@@ -99,21 +107,45 @@ type model struct {
 	frame    int
 }
 
-// rate turns a cumulative byte counter into kbps over ~1 s windows.
+// rate turns a peer's cumulative counters into what the status bar shows:
+// incoming kbps over ~1 s windows, and "bad" — an average of recent drop
+// events (lost, stall, skip, rebuffer) that decays over a few seconds, so
+// quality reflects the last moments, not the whole call.
 type rate struct {
 	bytes uint64
+	drops uint64
 	at    time.Time
 	kbps  float64
+	bad   float64
 }
 
-func (r *rate) feed(bytes uint64, now time.Time) {
+func (r *rate) feed(bytes, drops uint64, now time.Time) {
 	if r.at.IsZero() {
-		r.bytes, r.at = bytes, now
+		r.bytes, r.drops, r.at = bytes, drops, now
 		return
 	}
 	if d := now.Sub(r.at); d >= time.Second {
 		r.kbps = float64(bytes-r.bytes) * 8 / 1000 / d.Seconds()
-		r.bytes, r.at = bytes, now
+		r.bad = r.bad*0.7 + float64(drops-r.drops)
+		r.bytes, r.drops, r.at = bytes, drops, now
+	}
+}
+
+// drops is every event where the listener heard something other than the
+// frame that was sent: a lost packet, a stall, a skipped frame, a rebuffer.
+func drops(p *peer) uint64 {
+	return p.jb.lost.Load() + p.jb.stall.Load() + p.jb.skip.Load() + p.jb.rebuf.Load()
+}
+
+// quality grades recent drop events for the status bar.
+func quality(bad float64) string {
+	switch {
+	case bad < 0.5:
+		return green.Render("good")
+	case bad < 3:
+		return yellow.Render("ok")
+	default:
+		return red.Render("poor")
 	}
 }
 
@@ -203,7 +235,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r = &rate{}
 				m.rates[p] = r
 			}
-			r.feed(p.rxBytes.Load(), now)
+			r.feed(p.rxBytes.Load(), drops(p), now)
 		}
 		for p := range m.meters {
 			if !alive[p] {
@@ -375,9 +407,9 @@ func (m model) render() ([]string, geometry) {
 	if u := m.n.update.Load(); u != nil {
 		add("  " + yellow.Render(*u))
 	}
-	add("")
-
 	peers := m.people()
+	add("  " + m.statusBar(peers))
+	add("")
 	names := []string{m.n.name + " (you)"}
 	for _, p := range peers {
 		names = append(names, p.name)
@@ -412,7 +444,7 @@ func (m model) render() ([]string, geometry) {
 			}
 			state = dim.Render(via + rttText(r))
 		}
-		add("  " + keySt.Render("⇄ "+r.name) + " " + state)
+		add("  " + keySt.Render("⇄ "+r.name) + " " + dim.Render(verText(r)) + " " + state)
 	}
 	add("")
 
@@ -501,6 +533,47 @@ func (m model) render() ([]string, geometry) {
 	return lines, g
 }
 
+// statusBar sums the call up in one line: what we send, what comes in, the
+// worst ping and jitter, a quality grade from recent drops, and the drop
+// counters themselves. Per-person detail stays on the tiles.
+func (m model) statusBar(peers []*peer) string {
+	var rx, bad float64
+	var rtt, jit int64
+	var lost, stall, skip, rebuf uint64
+	relayed := 0
+	for _, p := range peers {
+		if r := m.rates[p]; r != nil {
+			rx += r.kbps
+			bad = max(bad, r.bad)
+		}
+		rtt = max(rtt, p.rttUS.Load())
+		jit = max(jit, p.jitUS.Load())
+		lost += p.jb.lost.Load()
+		stall += p.jb.stall.Load()
+		skip += p.jb.skip.Load()
+		rebuf += p.jb.rebuf.Load()
+		if p.via.Load() != nil && !p.direct() {
+			relayed++
+		}
+	}
+	tx := int(m.n.ctl.bitrate.Load()) * len(peers)
+	if m.n.ctl.muted.Load() {
+		tx = 0
+	}
+	sep := dim.Render(" · ")
+	if len(peers) == 0 {
+		return dim.Render(version + " · tx 0 kbps · rx 0 kbps · nobody to talk to yet")
+	}
+	s := fmt.Sprintf("%s%stx %d kbps%srx %.0f kbps", dim.Render(version), sep, tx, sep, rx)
+	s += fmt.Sprintf("%sping %.0f ms%sjitter %.1f ms", sep, float64(rtt)/1000, sep, float64(jit)/1000)
+	s += sep + "voice " + quality(bad)
+	s += sep + dim.Render(fmt.Sprintf("drops %d (lost %d · stall %d · skip %d · rebuf %d)", lost+stall+skip+rebuf, lost, stall, skip, rebuf))
+	if relayed > 0 {
+		s += sep + yellow.Render(fmt.Sprintf("%d via relay", relayed))
+	}
+	return s
+}
+
 func (m model) selfTile(w int) string {
 	ctl := m.n.ctl
 	head := "" // the name already says "(you)"; only a mute needs shouting
@@ -537,6 +610,7 @@ func (m model) peerTile(p *peer, i, w int) string {
 	if r := m.rates[p]; r != nil && r.kbps > 0 {
 		vol += dim.Render(fmt.Sprintf("  %.0f kbps", r.kbps))
 	}
+	vol += dim.Render("  " + verText(p))
 	return tile(st, w, p.name, status, mt, vol)
 }
 

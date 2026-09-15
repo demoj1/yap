@@ -38,6 +38,7 @@ type hello struct {
 	Addrs []string `json:"addrs"`
 	Reach [][]byte `json:"reach,omitempty"`
 	Relay bool     `json:"relay,omitempty"` // headless forwarder, not a person: no audio, never locked out
+	Ver   string   `json:"ver,omitempty"`   // build tag, shown next to the name so mismatches are obvious
 }
 
 // room fans hellos out across every rendezvous host.
@@ -120,7 +121,10 @@ func (r *room) listen(ctx context.Context) (<-chan hello, error) {
 }
 
 func (r *room) subscribe(ctx context.Context, host string, out chan<- hello) {
-	url := host + "/" + r.topic + "/json"
+	// since= replays the host's recent cache on connect: everyone announces
+	// at least every announceEvery, so a newcomer learns the whole room the
+	// moment it subscribes instead of waiting for the next round of hellos.
+	url := host + "/" + r.topic + "/json?since=2m"
 	for {
 		if ctx.Err() != nil {
 			return
