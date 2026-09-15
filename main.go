@@ -62,6 +62,7 @@ func main() {
 	nodenoise := fs.Bool("nodenoise", false, "start with RNNoise off")
 	nogate := fs.Bool("nogate", false, "start with the noise gate off")
 	aecOn := fs.Bool("aec", false, "enable acoustic echo cancellation (for speakers)")
+	noagc := fs.Bool("noagc", false, "start with automatic gain control off")
 	mic := fs.String("mic", set.Mic, "microphone name or prefix (default: system default)")
 	out := fs.String("out", set.Out, "speaker name or prefix (default: system default)")
 	fs.Usage = usage
@@ -72,6 +73,7 @@ func main() {
 	ctl.denoise.Store(set.Denoise && !*nodenoise)
 	ctl.gate.Store(set.Gate && !*nogate)
 	ctl.aec.Store(set.AEC || *aecOn)
+	ctl.agc.Store(set.AGC && !*noagc)
 
 	var l link
 	switch os.Args[1] {
@@ -103,6 +105,7 @@ func main() {
 		host, runtime.GOOS, runtime.GOARCH, runtime.Version(), runtime.NumCPU(), *name, filepath.Dir(set.path))
 	log.Printf("settings: bitrate %d · denoise %v · gate %v · mic %q · out %q · %d remembered volumes",
 		set.Bitrate, ctl.denoise.Load(), ctl.gate.Load(), set.Mic, set.Out, len(set.Volumes))
+	_ = ctl.agc.Load()
 	if ctl.aec.Load() {
 		log.Println("echo cancellation: on")
 	}

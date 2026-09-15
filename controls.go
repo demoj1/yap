@@ -12,6 +12,7 @@ type controls struct {
 	denoise atomic.Bool
 	gate    atomic.Bool // noise gate on the send path: stay silent until you actually speak
 	aec     atomic.Bool // acoustic echo cancellation (SpeexDSP)
+	agc     atomic.Bool // automatic gain control: normalize outgoing loudness
 }
 
 func (c *controls) stepBitrate(dir int) {

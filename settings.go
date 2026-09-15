@@ -18,11 +18,12 @@ type settings struct {
 	Denoise bool           `json:"denoise"`
 	Gate    bool           `json:"gate"`
 	AEC     bool           `json:"aec"`
+	AGC     bool           `json:"agc"`
 	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
 }
 
 func loadSettings() *settings {
-	s := &settings{Bitrate: 96, Denoise: true, Gate: true, Volumes: map[string]int{}}
+	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Volumes: map[string]int{}}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		panic(err)

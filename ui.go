@@ -318,6 +318,7 @@ func (m model) layout() layout {
 		{label: "d denoise", key: "d"},
 		{label: "g gate", key: "g"},
 		{label: "e echo", key: "e"},
+		{label: "a auto-gain", key: "a"},
 		{label: "+/- bitrate", key: "+", alt: "-"},
 		{label: "i mic", key: "i"},
 		{label: "o out", key: "o"},
@@ -404,6 +405,9 @@ func (m model) View() string {
 	}
 	if ctl.aec.Load() {
 		dn += " " + green.Render("aec")
+	}
+	if ctl.agc.Load() {
+		dn += " " + green.Render("agc")
 	}
 	lay := m.layout()
 	w := lay.w

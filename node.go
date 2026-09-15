@@ -385,6 +385,7 @@ func (n *node) sendLoop() {
 	dn := rnnoise.New()
 	defer dn.Close()
 	var g gate
+	var ag agc
 	var payload []byte // reused each frame
 	bitrate := 0
 	var frame uint32 // audio frame number, shared by every peer's copy of this frame
@@ -394,6 +395,9 @@ func (n *node) sendLoop() {
 		} else if n.ctl.denoise.Load() {
 			dn.Process(f[:rnnoise.FrameSize])
 			dn.Process(f[rnnoise.FrameSize:])
+		}
+		if n.ctl.agc.Load() && !n.ctl.muted.Load() {
+			ag.process(f) // normalize outgoing loudness
 		}
 		n.audio.micPeak.observe(f)
 		if n.ctl.gate.Load() && !n.ctl.muted.Load() && !g.pass(f) {
