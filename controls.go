@@ -10,6 +10,7 @@ type controls struct {
 	bitrate atomic.Int32 // kbps
 	muted   atomic.Bool
 	denoise atomic.Bool
+	gate    atomic.Bool // noise gate on the send path: stay silent until you actually speak
 }
 
 func (c *controls) stepBitrate(dir int) {

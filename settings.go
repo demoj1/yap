@@ -16,11 +16,12 @@ type settings struct {
 	Out     string         `json:"out,omitempty"`     // playback device name, "" = system default
 	Bitrate int            `json:"bitrate,omitempty"` // kbps
 	Denoise bool           `json:"denoise"`
+	Gate    bool           `json:"gate"`
 	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
 }
 
 func loadSettings() *settings {
-	s := &settings{Bitrate: 96, Denoise: true, Volumes: map[string]int{}}
+	s := &settings{Bitrate: 96, Denoise: true, Gate: true, Volumes: map[string]int{}}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		panic(err)

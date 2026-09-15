@@ -381,6 +381,7 @@ func (n *node) sendLoop() {
 	enc := newEncoder()
 	dn := rnnoise.New()
 	defer dn.Close()
+	var g gate
 	bitrate := 0
 	var frame uint32 // audio frame number, shared by every peer's copy of this frame
 	for f := range n.audio.frames {
@@ -391,6 +392,9 @@ func (n *node) sendLoop() {
 			dn.Process(f[rnnoise.FrameSize:])
 		}
 		n.audio.micPeak.observe(f)
+		if n.ctl.gate.Load() && !n.ctl.muted.Load() && !g.pass(f) {
+			clear(f) // below the gate: send silence so speaker echo isn't transmitted
+		}
 		peers := n.peerList()
 		if len(peers) == 0 {
 			continue

@@ -60,6 +60,7 @@ func main() {
 	name := fs.String("name", defaultName(), "your name, shown to the friend")
 	plain := fs.Bool("plain", false, "plain logs instead of the TUI")
 	nodenoise := fs.Bool("nodenoise", false, "start with RNNoise off")
+	nogate := fs.Bool("nogate", false, "start with the noise gate off")
 	mic := fs.String("mic", set.Mic, "microphone name or prefix (default: system default)")
 	out := fs.String("out", set.Out, "speaker name or prefix (default: system default)")
 	fs.Usage = usage
@@ -68,6 +69,7 @@ func main() {
 	ctl := &controls{}
 	ctl.bitrate.Store(int32(set.Bitrate))
 	ctl.denoise.Store(set.Denoise && !*nodenoise)
+	ctl.gate.Store(set.Gate && !*nogate)
 
 	var l link
 	switch os.Args[1] {
@@ -97,8 +99,8 @@ func main() {
 	host, _ := os.Hostname()
 	log.Printf("host %s · %s/%s · %s · %d cpu · name %q · config %s",
 		host, runtime.GOOS, runtime.GOARCH, runtime.Version(), runtime.NumCPU(), *name, filepath.Dir(set.path))
-	log.Printf("settings: bitrate %d · denoise %v · mic %q · out %q · %d remembered volumes",
-		set.Bitrate, ctl.denoise.Load(), set.Mic, set.Out, len(set.Volumes))
+	log.Printf("settings: bitrate %d · denoise %v · gate %v · mic %q · out %q · %d remembered volumes",
+		set.Bitrate, ctl.denoise.Load(), ctl.gate.Load(), set.Mic, set.Out, len(set.Volumes))
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: *port})
 	if err != nil {

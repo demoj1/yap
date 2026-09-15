@@ -316,6 +316,7 @@ func (m model) layout() layout {
 		{label: "←/→ volume", key: "right", alt: "left"},
 		{label: "m mute", key: "m"},
 		{label: "d denoise", key: "d"},
+		{label: "g gate", key: "g"},
 		{label: "+/- bitrate", key: "+", alt: "-"},
 		{label: "i mic", key: "i"},
 		{label: "o out", key: "o"},
@@ -396,6 +397,9 @@ func (m model) View() string {
 	dn := dim.Render("denoise off")
 	if ctl.denoise.Load() {
 		dn = green.Render("denoise on")
+	}
+	if ctl.gate.Load() {
+		dn += " " + green.Render("gate")
 	}
 	lay := m.layout()
 	w := lay.w
