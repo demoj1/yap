@@ -20,15 +20,14 @@ import (
 // hellos. We publish to and subscribe from ALL of them at once, so two
 // participants meet as long as any single host is reachable by both — one
 // host rate-limiting us (429) or going down no longer breaks the call. The
-// payload is AEAD-encrypted, so plain http mirrors are fine. Add your own
-// (e.g. a self-hosted ntfy) via -rendezvous.
-const staleHello = 60 // seconds: a cached hello older than this belongs to a run that is gone
-
+// payload is AEAD-encrypted, so plain http mirrors are fine.
 var rendezvousHosts = []string{
 	"https://ntfy.sh",
 	"https://ntfy.envs.net",
 	"https://ntfy.adminforge.de",
 }
+
+const staleHello = 60 // seconds: a cached hello older than this belongs to a run that is gone
 
 // hello is what every participant publishes to the room.
 type hello struct {

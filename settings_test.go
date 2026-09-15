@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,7 +42,7 @@ func TestSettingsRoundtrip(t *testing.T) {
 
 func loadInto(t *testing.T, raw []byte, s *settings) {
 	t.Helper()
-	if err := jsonUnmarshal(raw, s); err != nil {
+	if err := json.Unmarshal(raw, s); err != nil {
 		t.Fatal(err)
 	}
 	if s.Volumes == nil {

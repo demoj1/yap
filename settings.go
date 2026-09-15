@@ -87,5 +87,3 @@ func (s *settings) setVolume(name string, v int) {
 	s.mu.Unlock()
 	s.save()
 }
-
-func jsonUnmarshal(raw []byte, s *settings) error { return json.Unmarshal(raw, s) }

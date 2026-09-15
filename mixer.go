@@ -17,12 +17,7 @@ func (l *limiter) apply(mix []int32, out []int16) {
 	}
 	var peak int32
 	for _, x := range mix {
-		if x < 0 {
-			x = -x
-		}
-		if x > peak {
-			peak = x
-		}
+		peak = max(peak, x, -x)
 	}
 	want := 1.0
 	if peak > 32767 {

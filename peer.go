@@ -180,10 +180,8 @@ func (p *peer) accept(from *net.UDPAddr, seq uint64, audio []byte) {
 	}
 	now := time.Now()
 	if last := p.lastRx.Swap(now.UnixNano()); last != 0 && audio != nil {
-		d := (now.Sub(time.Unix(0, last)) - 20*time.Millisecond).Microseconds()
-		if d < 0 {
-			d = -d
-		}
+		d := (now.Sub(time.Unix(0, last)) - frameMS*time.Millisecond).Microseconds()
+		d = max(d, -d)
 		j := p.jitUS.Load()
 		p.jitUS.Store(j + (d-j)/16)
 	}

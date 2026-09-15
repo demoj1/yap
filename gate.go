@@ -19,11 +19,7 @@ const (
 func (g *gate) pass(pcm []int16) bool {
 	var peak int
 	for _, x := range pcm {
-		if v := int(x); v > peak {
-			peak = v
-		} else if -v > peak {
-			peak = -v
-		}
+		peak = max(peak, int(x), -int(x))
 	}
 	switch {
 	case peak >= gateOpenPeak:

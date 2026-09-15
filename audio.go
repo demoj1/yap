@@ -46,9 +46,7 @@ func (q *pcmQueue) pull(dst []int16) {
 	q.mu.Unlock()
 	if n < len(dst) {
 		q.underrun.Add(uint64(len(dst) - n))
-		for i := n; i < len(dst); i++ {
-			dst[i] = 0
-		}
+		clear(dst[n:])
 	}
 	if low {
 		select {
@@ -64,11 +62,7 @@ type peak struct{ v atomic.Int32 }
 func (p *peak) observe(pcm []int16) {
 	var m int32
 	for _, s := range pcm {
-		if a := int32(s); a > m {
-			m = a
-		} else if -a > m {
-			m = -a
-		}
+		m = max(m, int32(s), -int32(s))
 	}
 	for {
 		cur := p.v.Load()
