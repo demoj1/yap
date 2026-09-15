@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -163,4 +165,31 @@ func download(url, path string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// autoUpdate runs in relay/daemon mode: every minute it checks for a newer
+// release, installs it in place, and re-execs so the daemon keeps itself
+// current with no attention. The binary must be on a writable path (a bind
+// mount, not baked into a read-only image) for the update to persist.
+func autoUpdate() {
+	for range time.Tick(time.Minute) {
+		r, err := latestRelease()
+		if err != nil || !newerThan(r.Tag, version) {
+			continue
+		}
+		log.Println("relay: newer release", r.Tag, "— updating")
+		if err := selfUpdate(); err != nil {
+			log.Println("relay: update failed:", err)
+			continue
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			log.Println("relay: restart failed:", err)
+			continue
+		}
+		log.Println("relay: restarting into", r.Tag)
+		if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
+			log.Println("relay: exec failed:", err)
+		}
+	}
 }

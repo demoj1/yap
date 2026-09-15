@@ -81,6 +81,7 @@ func (n *node) run() {
 // public, always-on host it is a stable relay hub and rendezvous anchor.
 func (n *node) runRelay() {
 	n.relay = true
+	go autoUpdate()
 	go n.recvLoop()
 	go n.reaper()
 	go n.statsLoop()
