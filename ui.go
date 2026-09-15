@@ -203,8 +203,14 @@ func newUI(n *node, logPath string) *ui {
 
 func (u *ui) Run() error { _, err := u.prog.Run(); return err }
 
+// Write feeds log lines to the screen. The periodic per-peer stats stay in
+// the file only: the status bar and tiles show them live, and on screen
+// they would bury the events that matter (who joined, how, who left).
 func (u *ui) Write(p []byte) (int, error) {
-	u.prog.Send(logMsg(strings.TrimRight(string(p), "\n")))
+	line := strings.TrimRight(string(p), "\n")
+	if !strings.Contains(line, ": tx ") {
+		u.prog.Send(logMsg(line))
+	}
 	return len(p), nil
 }
 
@@ -389,7 +395,7 @@ type geometry struct {
 }
 
 const (
-	tileH   = 5 // border, 3 lines, border
+	tileH   = 7 // halo, border, 3 lines, border, halo
 	leftPad = 2
 )
 
@@ -697,15 +703,49 @@ var (
 	tileMeSt  = tileSt.BorderForeground(lipgloss.Color("42"))
 )
 
+// Speech levels (meter 0..1) at which a tile starts to "radiate": the border
+// goes thick and a halo of dots grows around it, fading with the meter.
+const (
+	speakLvl = 0.2
+	loudLvl  = 0.45
+	peakLvl  = 0.7
+)
+
 // tile draws one card: name + status, the VU bar with talk time at its
-// right, and a footer line.
+// right, and a footer line — wrapped in a halo that reacts to the voice.
 func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot string) string {
 	head := bold.Render(trunc(name, w-4))
 	if status != "" {
 		head += " " + status
 	}
 	talk = fmt.Sprintf("%8s", talk)
-	return st.Width(w).Render(fmt.Sprintf("%s\n%s %s\n%s", head, mt.bar(w-6-len(talk)-1), dim.Render(talk), foot))
+	if mt.level >= speakLvl {
+		st = st.Border(lipgloss.ThickBorder())
+	}
+	card := st.Width(w).Render(fmt.Sprintf("%s\n%s %s\n%s", head, mt.bar(w-6-len(talk)-1), dim.Render(talk), foot))
+	return halo(card, mt.level)
+}
+
+// halo rings a card with one row/column of dots whose weight follows the
+// voice level; silence leaves blank margins, so the grid never shifts.
+func halo(card string, level float64) string {
+	ch, st := " ", dim
+	switch {
+	case level >= peakLvl:
+		ch, st = "•", green.Bold(true)
+	case level >= loudLvl:
+		ch, st = "∙", green
+	case level >= speakLvl:
+		ch = "·"
+	}
+	rows := strings.Split(card, "\n")
+	ring := st.Render(strings.Repeat(ch, lipgloss.Width(rows[0])+2))
+	out := make([]string, 0, len(rows)+2)
+	out = append(out, ring)
+	for _, r := range rows {
+		out = append(out, st.Render(ch)+r+st.Render(ch))
+	}
+	return strings.Join(append(out, ring), "\n")
 }
 
 // deviceTile lists devices under a hotkey-lit title, marking the one in use.
