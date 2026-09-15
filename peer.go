@@ -26,6 +26,8 @@ const (
 	typAudio   = 0 // [0][frame uint32][opus]
 	typForward = 1 // [1][dst id 8][inner packet]   to a relay: pass this on
 	typRelayed = 2 // [2][src id 8][inner packet]   from a relay: this came from src
+	typPing    = 3 // [3][unix nanos int64]          answer with a pong carrying the same stamp
+	typPong    = 4 // [4][unix nanos int64]
 )
 
 const (
@@ -40,6 +42,20 @@ func audioPayload(frame uint32, opus []byte) []byte {
 	out[0] = typAudio
 	binary.BigEndian.PutUint32(out[1:], frame)
 	return append(out, opus...)
+}
+
+func stampPayload(typ byte, nanos int64) []byte {
+	out := make([]byte, 9)
+	out[0] = typ
+	binary.BigEndian.PutUint64(out[1:], uint64(nanos))
+	return out
+}
+
+func parseStamp(plain []byte) (int64, bool) {
+	if len(plain) != 9 {
+		return 0, false
+	}
+	return int64(binary.BigEndian.Uint64(plain[1:])), true
 }
 
 // parseAudio splits a typAudio payload into frame number and Opus data.
@@ -68,8 +84,11 @@ type peer struct {
 	seq      atomic.Uint64
 	rx, tx   atomic.Uint64
 	txBytes  atomic.Uint64
-	jitUS    atomic.Int64 // RFC 3550 style interarrival jitter, microseconds
-	lastRx   atomic.Int64 // unix nanos
+	rxBytes  atomic.Uint64 // audio bytes from them: their bitrate as we see it
+	rxLogged uint64        // rxBytes at the last stats line (statsLoop only)
+	rttUS    atomic.Int64  // smoothed ping round trip, microseconds; 0 until the first pong
+	jitUS    atomic.Int64  // RFC 3550 style interarrival jitter, microseconds
+	lastRx   atomic.Int64  // unix nanos
 	jb       *jitter
 	dec      *decoder
 	level    peak
@@ -142,6 +161,7 @@ func (p *peer) accept(from *net.UDPAddr, seq uint64, audio []byte) {
 	p.once.Do(func() { close(p.ready) })
 	if audio != nil {
 		p.rx.Add(1) // frames, not envelopes: keeps rx comparable with the sender's tx
+		p.rxBytes.Add(uint64(len(audio)))
 	}
 	now := time.Now()
 	if last := p.lastRx.Swap(now.UnixNano()); last != 0 && audio != nil {
@@ -230,8 +250,25 @@ func isQuiet(pcm []int16) bool {
 	return true
 }
 
+// gotPong folds one measured round trip into the smoothed rtt.
+func (p *peer) gotPong(sentNanos int64) {
+	rtt := (time.Now().UnixNano() - sentNanos) / 1000
+	if rtt < 0 {
+		return
+	}
+	if cur := p.rttUS.Load(); cur == 0 {
+		p.rttUS.Store(rtt)
+	} else {
+		p.rttUS.Store(cur + (rtt-cur)/4)
+	}
+}
+
 func (p *peer) stats(since time.Duration) string {
-	return fmt.Sprintf("%s: tx %d %.1f kB/s  rx %d  jitter %.1f ms | jb %d/%d lost %d stall %d late %d skip %d rebuf %d",
-		p.name, p.tx.Load(), float64(p.txBytes.Swap(0))/1000/since.Seconds(), p.rx.Load(), float64(p.jitUS.Load())/1000,
+	rxb := p.rxBytes.Load()
+	rxRate := float64(rxb-p.rxLogged) / 1000 / since.Seconds()
+	p.rxLogged = rxb
+	return fmt.Sprintf("%s: tx %d %.1f kB/s  rx %d %.1f kB/s  rtt %.0f ms  jitter %.1f ms | jb %d/%d lost %d stall %d late %d skip %d rebuf %d",
+		p.name, p.tx.Load(), float64(p.txBytes.Swap(0))/1000/since.Seconds(),
+		p.rx.Load(), rxRate, float64(p.rttUS.Load())/1000, float64(p.jitUS.Load())/1000,
 		p.jb.depth(), p.jb.target(), p.jb.lost.Load(), p.jb.stall.Load(), p.jb.late.Load(), p.jb.skip.Load(), p.jb.rebuf.Load())
 }

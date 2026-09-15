@@ -64,7 +64,20 @@ func (n *node) run() {
 	go n.mixLoop()
 	go n.reaper()
 	go n.statsLoop()
+	go n.pingLoop()
 	n.rendezvous()
+}
+
+// pingLoop measures round trip to every connected peer once a second over
+// whatever path audio takes (direct or relayed).
+func (n *node) pingLoop() {
+	for range time.Tick(time.Second) {
+		for _, p := range n.peerList() {
+			if p.connected() {
+				n.sendTo(p, stampPayload(typPing, time.Now().UnixNano()))
+			}
+		}
+	}
 }
 
 func (n *node) rendezvous() {
@@ -290,10 +303,6 @@ func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
 		return
 	}
 	switch plain[0] {
-	case typAudio:
-		if frame, opus, ok := parseAudio(plain); ok {
-			q.accept(from, frame, opus)
-		}
 	case typForward:
 		q.accept(from, 0, nil)
 		if len(plain) < 1+idLen+8 {
@@ -324,10 +333,33 @@ func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
 		if !src.direct() && src.via.Load() == nil {
 			src.via.Store(q) // they found a relay to us; answer the same way
 		}
-		if len(innerPlain) == 0 {
-			src.accept(nil, 0, nil)
-		} else if frame, opus, ok := parseAudio(innerPlain); ok {
-			src.accept(nil, frame, opus)
+		n.deliver(src, nil, innerPlain) // nil: the relay's address is not theirs
+	default:
+		n.deliver(q, from, plain)
+	}
+}
+
+// deliver handles an end-to-end payload from p: audio for the mixer, or a
+// ping/pong for the round-trip meter. from is nil when it came via a relay.
+func (n *node) deliver(p *peer, from *net.UDPAddr, plain []byte) {
+	if len(plain) == 0 {
+		p.accept(from, 0, nil)
+		return
+	}
+	switch plain[0] {
+	case typAudio:
+		if frame, opus, ok := parseAudio(plain); ok {
+			p.accept(from, frame, opus)
+		}
+	case typPing:
+		p.accept(from, 0, nil)
+		if ts, ok := parseStamp(plain); ok {
+			n.sendTo(p, stampPayload(typPong, ts))
+		}
+	case typPong:
+		p.accept(from, 0, nil)
+		if ts, ok := parseStamp(plain); ok {
+			p.gotPong(ts)
 		}
 	}
 }

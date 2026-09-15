@@ -46,10 +46,29 @@ type model struct {
 	noticeAt int
 	mic      meter
 	meters   map[*peer]*meter
-	cursor   int // selected tile in the roster
-	width    int // terminal columns, for the tile grid
+	rates    map[*peer]*rate // incoming kbps per peer, sampled once a second
+	cursor   int             // selected tile in the roster
+	width    int             // terminal columns, for the tile grid
 	logs     []string
 	frame    int
+}
+
+// rate turns a cumulative byte counter into kbps over ~1 s windows.
+type rate struct {
+	bytes uint64
+	at    time.Time
+	kbps  float64
+}
+
+func (r *rate) feed(bytes uint64, now time.Time) {
+	if r.at.IsZero() {
+		r.bytes, r.at = bytes, now
+		return
+	}
+	if d := now.Sub(r.at); d >= time.Second {
+		r.kbps = float64(bytes-r.bytes) * 8 / 1000 / d.Seconds()
+		r.bytes, r.at = bytes, now
+	}
 }
 
 // meter is a VU bar with instant attack and slow release.
@@ -100,7 +119,7 @@ func (m meter) bar(n int) string {
 
 func newUI(n *node, logPath string) *ui {
 	u := &ui{}
-	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}}, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}}, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	return u
 }
 
@@ -120,6 +139,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mic.feed(m.n.audio.micPeak.take(), m.frame)
 		peers := m.n.peerList()
 		alive := map[*peer]bool{}
+		now := time.Time(msg)
 		for _, p := range peers {
 			alive[p] = true
 			mt := m.meters[p]
@@ -128,10 +148,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.meters[p] = mt
 			}
 			mt.feed(p.level.take(), m.frame)
+			r := m.rates[p]
+			if r == nil {
+				r = &rate{}
+				m.rates[p] = r
+			}
+			r.feed(p.rxBytes.Load(), now)
 		}
 		for p := range m.meters {
 			if !alive[p] {
 				delete(m.meters, p)
+				delete(m.rates, p)
 			}
 		}
 		if m.cursor >= len(peers) {
@@ -384,7 +411,17 @@ func (m model) View() string {
 		}
 		status := yellow.Render(spinner[m.frame%len(spinner)] + " punching")
 		if p.connected() {
-			status = green.Render("●") + " " + dim.Render(fmt.Sprintf("%.0f ms", float64(p.jitUS.Load())/1000))
+			path := "●"
+			if p.via.Load() != nil {
+				path = "◐" // through a relay
+			}
+			rtt := "…"
+			if us := p.rttUS.Load(); us >= 1000 {
+				rtt = fmt.Sprintf("%.0f ms", float64(us)/1000)
+			} else if us > 0 {
+				rtt = "<1 ms"
+			}
+			status = green.Render(path) + " " + dim.Render(rtt)
 		}
 		var mt meter
 		if x := m.meters[p]; x != nil { // View can run before the tick that creates it
@@ -394,7 +431,11 @@ func (m model) View() string {
 		if i == m.cursor {
 			vol = selSt.Render("◂ " + vol + " ▸")
 		}
-		tiles = append(tiles, tile(st, w, p.name, status, mt, vol))
+		kbps := ""
+		if r := m.rates[p]; r != nil && r.kbps > 0 {
+			kbps = dim.Render(fmt.Sprintf("  %.0f kbps", r.kbps))
+		}
+		tiles = append(tiles, tile(st, w, p.name, status, mt, vol+kbps))
 	}
 
 	for i := 0; i < len(tiles); i += lay.cols {

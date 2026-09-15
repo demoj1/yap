@@ -9,7 +9,8 @@ yap listen              # prints yap://<secret> — send it to a friend; the lin
 yap join yap://...      # friend runs this
 ```
 
-Everyone gets a TUI with a roster: a level meter per person, `↑/↓` to pick
+Everyone gets a TUI with a roster: a level meter, round-trip time and
+incoming bitrate per person (◐ marks someone reached through a relay), `↑/↓` to pick
 someone, `←/→` their volume, `m` mute yourself, `d` RNNoise on/off, `+/-` your
 Opus bitrate (12–160 kbps, live), `q` quit. The mouse works too: click a tile
 to pick that person (your own tile toggles mute), scroll over a tile for
