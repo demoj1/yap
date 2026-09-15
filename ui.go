@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	tick     = 33 * time.Millisecond
+	tick     = 50 * time.Millisecond // 20 fps: meters stay fluid, a frame is the main idle cost
 	meterLen = 30
 	logKeep  = 200 // log lines remembered; render shows as many as fit below the controls
 )
@@ -163,6 +163,7 @@ type model struct {
 	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
 	outputs  []string
 	tune     int            // selected row of the tuning tile
+	cache    *panelCache    // device + tuning tiles, rebuilt only when they change
 	seen     map[*peer]bool // people heard from at least once: a new one chimes in, a vanished one chimes out
 	asked    bool           // the update dialog was answered (either way)
 	doUpdate bool           // the answer was yes: main updates and restarts after the TUI exits
@@ -261,8 +262,8 @@ func (m meter) bar(n int) string {
 // newUI builds the screen; notice, if any, is shown for the first ~10 s.
 func newUI(n *node, logPath, notice string) *ui {
 	u := &ui{}
-	m := model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}, seen: map[*peer]bool{},
-		notice: notice, noticeAt: 240} // a notice lives 60 frames past noticeAt: this one until frame 300
+	m := model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}, seen: map[*peer]bool{}, cache: &panelCache{},
+		notice: notice, noticeAt: 200} // a notice lives 60 frames past noticeAt: this one for ~13 s
 	u.prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	return u
 }
@@ -535,30 +536,33 @@ func (m model) render() ([]string, geometry) {
 	ctl := m.n.ctl
 	var g geometry
 	var lines []string
-	clip := lipgloss.NewStyle().MaxWidth(max(1, m.width)) // a line that wrapped would shift every row below it
-	add := func(s string) {
+	add := func(s string) { lines = append(lines, s) }
+	// A line that wrapped would shift every row below it; only free-text
+	// lines can, so only they pay for the width measurement.
+	clip := lipgloss.NewStyle().MaxWidth(max(1, m.width))
+	addClipped := func(s string) {
 		if m.width > 0 {
 			s = clip.Render(s)
 		}
-		lines = append(lines, s)
+		add(s)
 	}
 
 	add("")
 	g.linkRow = len(lines)
-	add("  " + linkSt.Render(m.n.link.String()) + dim.Render("   c to copy"))
+	addClipped("  " + linkSt.Render(m.n.link.String()) + dim.Render("   c to copy"))
 	if tag := m.n.update.Load(); tag != nil {
 		if m.asked {
-			add("  " + dim.Render(*tag+" is out — yap update"))
+			addClipped("  " + dim.Render(*tag+" is out — yap update"))
 		} else { // the dialog: y updates and restarts into the same room, n dismisses
 			lead := fmt.Sprintf("⬆ %s available (you run %s) — update now?   ", *tag, version)
 			yes, no := "[y] yes", "[n] later"
 			x, row := leftPad+len([]rune(lead)), len(lines)
 			g.ctl = append(g.ctl, seg{x, x + len(yes), "y", "", row}, seg{x + len(yes) + 3, x + len(yes) + 3 + len(no), "n", "", row})
-			add("  " + yellow.Render(lead) + hotSt.Render(yes) + "   " + hotSt.Render(no))
+			addClipped("  " + yellow.Render(lead) + hotSt.Render(yes) + "   " + hotSt.Render(no))
 		}
 	}
 	peers := m.people()
-	add("  " + m.statusBar(peers))
+	addClipped("  " + m.statusBar(peers))
 	add("")
 	names := []string{m.n.name + " (you)"}
 	for _, p := range peers {
@@ -594,7 +598,7 @@ func (m model) render() ([]string, geometry) {
 			}
 			state = dim.Render(via + rttText(r))
 		}
-		add("  " + keySt.Render("⇄ "+r.name) + " " + dim.Render(verText(r)) + " " + state)
+		addClipped("  " + keySt.Render("⇄ "+r.name) + " " + dim.Render(verText(r)) + " " + state)
 	}
 	add("")
 
@@ -662,52 +666,32 @@ func (m model) render() ([]string, geometry) {
 	flush()
 	add("")
 
-	// Device tiles: every microphone and speaker listed, the one in use
-	// marked; a click on a row switches to it. Side by side when they fit,
-	// stacked on a narrow terminal.
-	stack := m.width > 0 && m.width < 2*(tileMinW+2)+leftPad+1
-	dw := max(tileMinW, min(m.width/2-leftPad-1, 60))
-	if stack {
-		dw = max(tileMinW, min(m.width-leftPad-2, 60))
-	}
-	in := deviceTile(dw, "input", "i", m.inputs, m.n.audio.mic)
-	out := deviceTile(dw, "output", "o", m.outputs, m.n.audio.out)
-	stride := lipgloss.Width(strings.SplitN(in, "\n", 2)[0])
-	g.dev[0] = devBox{len(lines), leftPad, leftPad + stride, len(m.inputs)}
-	var block string
-	if stack {
-		g.dev[1] = devBox{len(lines) + lipgloss.Height(in), leftPad, leftPad + stride, len(m.outputs)}
-		block = lipgloss.JoinVertical(lipgloss.Left, in, out)
-	} else {
-		g.dev[1] = devBox{len(lines), leftPad + stride, leftPad + 2*stride, len(m.outputs)}
-		block = lipgloss.JoinHorizontal(lipgloss.Top, in, out)
-	}
-	for _, ln := range strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(block), "\n") {
-		add(ln)
-	}
-
-	// Tuning tile: the echo canceller knobs, one per row, saved as they turn.
+	// Device and tuning tiles change rarely, and bordered boxes are the most
+	// expensive thing to lay out, so their lines are cached and rebuilt only
+	// when something in them changes; the click geometry is kept relative
+	// to the block and shifted to wherever it lands this frame.
 	knobs := m.knobs()
-	rows := []string{bold.Render("tuning") + dim.Render("   tab picks · [ ] or click ◂ ▸")}
-	g.arrows = g.arrows[:0]
+	vals := make([]string, len(knobs))
 	for i, k := range knobs {
-		val := fmt.Sprintf("◂ %d %s ▸", k.get(), k.unit)
-		pad := strings.Repeat(" ", max(1, dw-2-len([]rune(k.name))-len([]rune(val))))
-		left := leftPad + 2 + len([]rune(k.name)) + len(pad) // content starts after border + padding
-		g.arrows = append(g.arrows, [2]int{left, left + len([]rune(val)) - 1})
-		if i == m.tune {
-			rows = append(rows, k.name+pad+selSt.Render(val))
-		} else {
-			rows = append(rows, dim.Render(k.name+pad+val))
-		}
+		vals[i] = fmt.Sprint(k.get())
 	}
-	g.tune = devBox{len(lines), leftPad, leftPad + stride, len(knobs)}
-	for _, ln := range strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(tileSt.Width(dw).Render(strings.Join(rows, "\n"))), "\n") {
+	key := fmt.Sprintf("%d|%d|%s|%s|%s|%s|%d|%s", m.width, m.tune, strings.Join(m.inputs, "\x00"), strings.Join(m.outputs, "\x00"),
+		m.n.audio.mic, m.n.audio.out, len(knobs), strings.Join(vals, ","))
+	if c := m.cache; c.key != key {
+		c.build(m, knobs)
+		c.key = key
+	}
+	top := len(lines)
+	for _, ln := range m.cache.lines {
 		add(ln)
 	}
+	g.dev, g.tune, g.arrows = m.cache.dev, m.cache.tune, m.cache.arrows
+	g.dev[0].top += top
+	g.dev[1].top += top
+	g.tune.top += top
 
 	if m.notice != "" && m.frame-m.noticeAt < 60 {
-		add("  " + yellow.Render("▸ "+m.notice))
+		addClipped("  " + yellow.Render("▸ "+m.notice))
 	} else {
 		add("")
 	}
@@ -831,12 +815,12 @@ func (m model) peerTile(p *peer, i, w int) string {
 
 // mouse maps clicks and wheel onto actions using the exact drawn geometry.
 func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
-	_, g := m.render()
 	wheel := e.Button == tea.MouseButtonWheelUp || e.Button == tea.MouseButtonWheelDown
 	up := e.Button == tea.MouseButtonWheelUp
 	if !wheel && e.Action != tea.MouseActionPress {
-		return m, nil
+		return m, nil // releases and drags: nothing to hit-test, no render
 	}
+	_, g := m.render()
 	if t := g.tune; !wheel && e.Y >= t.top+2 && e.Y < t.top+2+t.rows && e.X >= t.x0 && e.X < t.x1 {
 		m.tune = e.Y - t.top - 2 // only the arrows turn a knob; the wheel is too easy to nudge by accident
 		switch {
@@ -955,6 +939,56 @@ func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot st
 func dotBorder(ch string) lipgloss.Border {
 	return lipgloss.Border{Top: ch, Bottom: ch, Left: ch, Right: ch,
 		TopLeft: ch, TopRight: ch, BottomLeft: ch, BottomRight: ch}
+}
+
+// panelCache holds the rendered device and tuning tiles between frames.
+// It is a pointer shared by every copy of the model, so a rebuild sticks.
+type panelCache struct {
+	key    string
+	lines  []string
+	dev    [2]devBox // tops relative to the first cached line
+	tune   devBox
+	arrows [][2]int
+}
+
+// build lays the panels out: device tiles side by side when they fit,
+// stacked on a narrow terminal, the tuning tile below.
+func (c *panelCache) build(m model, knobs []knob) {
+	stack := m.width > 0 && m.width < 2*(tileMinW+2)+leftPad+1
+	dw := max(tileMinW, min(m.width/2-leftPad-1, 60))
+	if stack {
+		dw = max(tileMinW, min(m.width-leftPad-2, 60))
+	}
+	in := deviceTile(dw, "input", "i", m.inputs, m.n.audio.mic)
+	out := deviceTile(dw, "output", "o", m.outputs, m.n.audio.out)
+	stride := lipgloss.Width(strings.SplitN(in, "\n", 2)[0])
+	c.dev[0] = devBox{0, leftPad, leftPad + stride, len(m.inputs)}
+	var block string
+	if stack {
+		c.dev[1] = devBox{lipgloss.Height(in), leftPad, leftPad + stride, len(m.outputs)}
+		block = lipgloss.JoinVertical(lipgloss.Left, in, out)
+	} else {
+		c.dev[1] = devBox{0, leftPad + stride, leftPad + 2*stride, len(m.outputs)}
+		block = lipgloss.JoinHorizontal(lipgloss.Top, in, out)
+	}
+	c.lines = strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(block), "\n")
+
+	// Tuning tile: the echo canceller knobs, one per row, saved as they turn.
+	rows := []string{bold.Render("tuning") + dim.Render("   tab picks · [ ] or click ◂ ▸")}
+	c.arrows = c.arrows[:0]
+	for i, k := range knobs {
+		val := fmt.Sprintf("◂ %d %s ▸", k.get(), k.unit)
+		pad := strings.Repeat(" ", max(1, dw-2-len([]rune(k.name))-len([]rune(val))))
+		left := leftPad + 2 + len([]rune(k.name)) + len(pad) // content starts after border + padding
+		c.arrows = append(c.arrows, [2]int{left, left + len([]rune(val)) - 1})
+		if i == m.tune {
+			rows = append(rows, k.name+pad+selSt.Render(val))
+		} else {
+			rows = append(rows, dim.Render(k.name+pad+val))
+		}
+	}
+	c.tune = devBox{len(c.lines), leftPad, leftPad + stride, len(knobs)}
+	c.lines = append(c.lines, strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(tileSt.Width(dw).Render(strings.Join(rows, "\n"))), "\n")...)
 }
 
 // deviceTile lists devices under a hotkey-lit title, marking the one in use.

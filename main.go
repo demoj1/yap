@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 )
 
 var version = "dev" // set by -ldflags in CI
@@ -33,6 +34,14 @@ func usage() {
 
 func main() {
 	log.SetFlags(log.Ltime)
+	if path := os.Getenv("YAP_CPUPROFILE"); path != "" { // diagnostics: go tool pprof -top yap <path>
+		f, err := os.Create(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		must(pprof.StartCPUProfile(f))
+		defer pprof.StopCPUProfile()
+	}
 	if len(os.Args) < 2 { // bare "yap" hosts a room: the one-command start
 		os.Args = append(os.Args, "listen")
 	}
