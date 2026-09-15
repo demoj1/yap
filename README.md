@@ -11,7 +11,10 @@ yap join yap://...      # friend runs this
 
 Everyone gets a TUI with a roster: a level meter per person, `↑/↓` to pick
 someone, `←/→` their volume, `m` mute yourself, `d` RNNoise on/off, `+/-` your
-Opus bitrate (12–160 kbps, live), `q` quit. `-name` sets what others see,
+Opus bitrate (12–160 kbps, live), `q` quit. The mouse works too: click a tile
+to pick that person (your own tile toggles mute), scroll over a tile for
+their volume (yours: bitrate), click a label in the help line (right-click
+for the opposite direction). `-name` sets what others see,
 `-plain` gives logs instead of the TUI. People who drop out (10 s silence)
 vanish from the roster and reappear when they come back; everyone
 re-announces every 20 s so latecomers find the whole group. `yap devices` lists

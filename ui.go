@@ -100,7 +100,7 @@ func (m meter) bar(n int) string {
 
 func newUI(n *node, logPath string) *ui {
 	u := &ui{}
-	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}}, tea.WithAltScreen())
+	u.prog = tea.NewProgram(model{n: n, logPath: logPath, meters: map[*peer]*meter{}}, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	return u
 }
 
@@ -148,48 +148,170 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case tea.KeyMsg:
-		ctl := m.n.ctl
-		peers := m.n.peerList()
-		var sel *peer
-		if m.cursor < len(peers) {
-			sel = peers[m.cursor]
+		return m.act(msg.String())
+	case tea.MouseMsg:
+		return m.mouse(msg)
+	}
+	return m, nil
+}
+
+// act performs one keyboard action; mouse events are translated into these.
+func (m model) act(key string) (tea.Model, tea.Cmd) {
+	ctl := m.n.ctl
+	peers := m.n.peerList()
+	var sel *peer
+	if m.cursor < len(peers) {
+		sel = peers[m.cursor]
+	}
+	switch key {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "up", "k":
+		m.cursor = max(0, m.cursor-1)
+	case "down", "j":
+		m.cursor = min(max(0, len(peers)-1), m.cursor+1)
+	case "right", "l":
+		if sel != nil {
+			m.n.setVolume(sel, int(min(200, sel.volume.Load()+10)))
 		}
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "up", "k":
-			m.cursor = max(0, m.cursor-1)
-		case "down", "j":
-			m.cursor = min(max(0, len(peers)-1), m.cursor+1)
-		case "right", "l":
-			if sel != nil {
-				m.n.setVolume(sel, int(min(200, sel.volume.Load()+10)))
+	case "left", "h":
+		if sel != nil {
+			m.n.setVolume(sel, int(max(0, sel.volume.Load()-10)))
+		}
+	case "m":
+		ctl.muted.Store(!ctl.muted.Load())
+	case "d":
+		ctl.denoise.Store(!ctl.denoise.Load())
+		m.n.set.Denoise = ctl.denoise.Load()
+		m.n.set.save()
+	case "+", "=":
+		ctl.stepBitrate(+1)
+		m.n.set.Bitrate = int(ctl.bitrate.Load())
+		m.n.set.save()
+	case "-", "_":
+		ctl.stepBitrate(-1)
+		m.n.set.Bitrate = int(ctl.bitrate.Load())
+		m.n.set.save()
+	case "i":
+		return m, func() tea.Msg { return noticeMsg(m.n.cycleDevice(malgo.Capture)) }
+	case "o":
+		return m, func() tea.Msg { return noticeMsg(m.n.cycleDevice(malgo.Playback)) }
+	}
+	return m, nil
+}
+
+// mouse maps a click or wheel event onto the same actions as the keys:
+// click a tile to pick that person (your own tile toggles mute), wheel over
+// a tile for that person's volume (your own: bitrate), click a help label.
+func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
+	lay := m.layout()
+	wheel := e.Button == tea.MouseButtonWheelUp || e.Button == tea.MouseButtonWheelDown
+	if !wheel && e.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	if i, ok := lay.tileAt(e.X, e.Y); ok {
+		switch {
+		case wheel && i == 0:
+			if e.Button == tea.MouseButtonWheelUp {
+				return m.act("+")
 			}
-		case "left", "h":
-			if sel != nil {
-				m.n.setVolume(sel, int(max(0, sel.volume.Load()-10)))
+			return m.act("-")
+		case wheel:
+			m.cursor = i - 1
+			if e.Button == tea.MouseButtonWheelUp {
+				return m.act("right")
 			}
-		case "m":
-			ctl.muted.Store(!ctl.muted.Load())
-		case "d":
-			ctl.denoise.Store(!ctl.denoise.Load())
-			m.n.set.Denoise = ctl.denoise.Load()
-			m.n.set.save()
-		case "+", "=":
-			ctl.stepBitrate(+1)
-			m.n.set.Bitrate = int(ctl.bitrate.Load())
-			m.n.set.save()
-		case "-", "_":
-			ctl.stepBitrate(-1)
-			m.n.set.Bitrate = int(ctl.bitrate.Load())
-			m.n.set.save()
-		case "i":
-			return m, func() tea.Msg { return noticeMsg(m.n.cycleDevice(malgo.Capture)) }
-		case "o":
-			return m, func() tea.Msg { return noticeMsg(m.n.cycleDevice(malgo.Playback)) }
+			return m.act("left")
+		case i == 0:
+			return m.act("m")
+		default:
+			m.cursor = i - 1
+		}
+		return m, nil
+	}
+	if e.Y == lay.helpY && !wheel {
+		for _, s := range lay.help {
+			if e.X >= s.x0 && e.X < s.x1 {
+				key := s.key
+				if e.Button == tea.MouseButtonRight && s.alt != "" {
+					key = s.alt
+				}
+				return m.act(key)
+			}
 		}
 	}
 	return m, nil
+}
+
+// layout is the geometry View draws and mouse() hit-tests: tiles in a grid
+// starting at row tileY, help labels on row helpY.
+type layout struct {
+	w, cols, tiles int
+	tileY, helpY   int
+	help           []helpSeg
+}
+
+type helpSeg struct {
+	x0, x1   int
+	label    string
+	key, alt string // alt is the right-click action
+}
+
+const (
+	tileY = 3 // blank, link, blank
+	tileH = 5 // border, 3 lines, border
+)
+
+func (m model) layout() layout {
+	peers := m.n.peerList()
+	names := []string{m.n.name + " (you)"}
+	for _, p := range peers {
+		names = append(names, p.name)
+	}
+	w := tileWidth(names, m.width)
+	lay := layout{w: w, tiles: len(names), tileY: tileY}
+	lay.cols = max(1, (max(m.width, w+4)-2)/(w+2))
+	rows := (lay.tiles + lay.cols - 1) / lay.cols
+	y := tileY + rows*tileH
+	if len(peers) == 0 {
+		y += 2
+	}
+	if m.n.set.Mic != "" || m.n.set.Out != "" {
+		y++
+	}
+	lay.helpY = y + 1
+	x := 2
+	for _, s := range []helpSeg{
+		{label: "↑/↓ pick", key: "down", alt: "up"},
+		{label: "←/→ volume", key: "right", alt: "left"},
+		{label: "m mute", key: "m"},
+		{label: "d denoise", key: "d"},
+		{label: "+/- bitrate", key: "+", alt: "-"},
+		{label: "i mic", key: "i"},
+		{label: "o out", key: "o"},
+		{label: "q quit", key: "q"},
+	} {
+		s.x0, s.x1 = x, x+len([]rune(s.label))
+		lay.help = append(lay.help, s)
+		x = s.x1 + 2
+	}
+	return lay
+}
+
+// tileAt returns the tile index under a cell (0 = you), if any.
+func (l layout) tileAt(x, y int) (int, bool) {
+	if y < l.tileY || x < 2 {
+		return 0, false
+	}
+	row, col := (y-l.tileY)/tileH, (x-2)/(l.w+2)
+	if col >= l.cols {
+		return 0, false
+	}
+	i := row*l.cols + col
+	if i >= l.tiles {
+		return 0, false
+	}
+	return i, true
 }
 
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -241,13 +363,10 @@ func (m model) View() string {
 	if ctl.denoise.Load() {
 		dn = green.Render("denoise on")
 	}
+	lay := m.layout()
+	w := lay.w
 	peers := m.n.peerList()
-	names := []string{m.n.name + " (you)"}
-	for _, p := range peers {
-		names = append(names, p.name)
-	}
-	w := tileWidth(names, m.width)
-	me := tile(tileMeSt, w, names[0], mic, m.mic,
+	me := tile(tileMeSt, w, m.n.name+" (you)", mic, m.mic,
 		dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load()))+" "+dn)
 
 	tiles := []string{me}
@@ -271,9 +390,8 @@ func (m model) View() string {
 		tiles = append(tiles, tile(st, w, p.name, status, mt, vol))
 	}
 
-	cols := max(1, (max(m.width, w+4)-2)/(w+3))
-	for i := 0; i < len(tiles); i += cols {
-		row := tiles[i:min(i+cols, len(tiles))]
+	for i := 0; i < len(tiles); i += lay.cols {
+		row := tiles[i:min(i+lay.cols, len(tiles))]
 		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(lipgloss.JoinHorizontal(lipgloss.Top, row...)))
 		b.WriteString("\n")
 	}
@@ -285,9 +403,15 @@ func (m model) View() string {
 	}
 	b.WriteString("\n")
 
-	fmt.Fprintf(&b, "  %s pick  %s volume  %s mute  %s denoise  %s bitrate  %s mic  %s out  %s quit\n",
-		keySt.Render("↑/↓"), keySt.Render("←/→"), keySt.Render("m"), keySt.Render("d"), keySt.Render("+/-"),
-		keySt.Render("i"), keySt.Render("o"), keySt.Render("q"))
+	b.WriteString("  ")
+	for i, s := range lay.help { // label = "<keys> <word>": keys highlighted, same cells mouse() hit-tests
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		keys, word, _ := strings.Cut(s.label, " ")
+		b.WriteString(keySt.Render(keys) + " " + word)
+	}
+	b.WriteString("\n")
 	if m.notice != "" && m.frame-m.noticeAt < 90 {
 		fmt.Fprintf(&b, "  %s\n", yellow.Render(m.notice))
 	} else {
