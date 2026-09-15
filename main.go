@@ -104,7 +104,7 @@ func main() {
 			usage()
 		}
 		l = loadOrCreateLink(*rotate)
-	case "join":
+	case "join", "relay":
 		if fs.NArg() != 1 {
 			usage()
 		}
@@ -112,16 +112,10 @@ func main() {
 		if l, err = parseLink(fs.Arg(0)); err != nil {
 			log.Fatal(err)
 		}
-		*port = 0
-	case "relay":
-		if fs.NArg() != 1 {
-			usage()
+		relay = os.Args[1] == "relay"
+		if !relay {
+			*port = 0 // a caller takes any free port; the relay keeps the one it was given
 		}
-		var err error
-		if l, err = parseLink(fs.Arg(0)); err != nil {
-			log.Fatal(err)
-		}
-		relay = true
 	default:
 		usage()
 	}
@@ -136,7 +130,6 @@ func main() {
 		host, runtime.GOOS, runtime.GOARCH, runtime.Version(), runtime.NumCPU(), *name, filepath.Dir(set.path))
 	log.Printf("settings: bitrate %d · denoise %v · gate %v · mic %q · out %q · %d remembered volumes",
 		set.Bitrate, ctl.denoise.Load(), ctl.gate.Load(), set.Mic, set.Out, len(set.Volumes))
-	_ = ctl.agc.Load()
 	if ctl.aec.Load() {
 		log.Println("echo cancellation: on")
 	}
