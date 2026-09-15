@@ -46,7 +46,8 @@ type node struct {
 	stunCh chan []byte // STUN replies, routed out of recvLoop
 	pub    atomic.Pointer[net.UDPAddr]
 	room   *room
-	update atomic.Pointer[string] // "update available ..." once the check found a newer release
+	update atomic.Pointer[string]  // "update available ..." once the check found a newer release
+	roster atomic.Pointer[[]*peer] // cached sorted snapshot for the per-frame hot paths
 }
 
 func newNode(l link, name string, ctl *controls, set *settings) *node {
@@ -169,6 +170,7 @@ func (n *node) onHello(h hello) bool {
 	p.joinedAt = n.joined
 	p.since = time.Now()
 	n.peers[string(h.ID)] = p
+	n.rebuildRoster()
 	n.mu.Unlock()
 	log.Println(h.Name, "is at", h.Addrs)
 	go n.punch(p, h.Addrs)
@@ -252,6 +254,7 @@ func (n *node) dropLocked(p *peer) {
 			q.via.Store(nil) // their relay is gone; the next hello re-punches
 		}
 	}
+	n.rebuildRoster()
 	p.markGone()
 }
 
@@ -382,6 +385,7 @@ func (n *node) sendLoop() {
 	dn := rnnoise.New()
 	defer dn.Close()
 	var g gate
+	var payload []byte // reused each frame
 	bitrate := 0
 	var frame uint32 // audio frame number, shared by every peer's copy of this frame
 	for f := range n.audio.frames {
@@ -403,10 +407,10 @@ func (n *node) sendLoop() {
 			must(enc.enc.SetBitrate(b * 1000))
 			bitrate = b
 		}
-		audio := audioPayload(frame, enc.encode(f))
+		payload = appendAudio(payload, frame, enc.encode(f))
 		frame++
 		for _, p := range peers {
-			n.sendTo(p, audio)
+			n.sendTo(p, payload)
 		}
 	}
 }
@@ -492,16 +496,26 @@ func (n *node) statsLoop() {
 	}
 }
 
-// peerList is a snapshot of the roster in join order.
+// peerList returns the current roster in join order. It hands back a cached
+// immutable snapshot, so the per-frame callers (sendLoop, mixLoop, recvLoop)
+// neither allocate nor sort; the slice is rebuilt only when the membership
+// changes. Never mutate the returned slice.
 func (n *node) peerList() []*peer {
-	n.mu.Lock()
+	if r := n.roster.Load(); r != nil {
+		return *r
+	}
+	return nil
+}
+
+// rebuildRoster refreshes the cached snapshot. Call with n.mu held after any
+// add or remove.
+func (n *node) rebuildRoster() {
 	out := make([]*peer, 0, len(n.peers))
 	for _, p := range n.peers {
 		out = append(out, p)
 	}
-	n.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].joinedAt < out[j].joinedAt })
-	return out
+	n.roster.Store(&out)
 }
 
 // setVolume updates a peer's live volume and remembers it by name.

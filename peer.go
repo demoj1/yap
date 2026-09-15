@@ -38,10 +38,15 @@ const (
 
 // audioPayload frames one Opus packet as a typAudio payload.
 func audioPayload(frame uint32, opus []byte) []byte {
-	out := make([]byte, audioHead, audioHead+len(opus))
-	out[0] = typAudio
-	binary.BigEndian.PutUint32(out[1:], frame)
-	return append(out, opus...)
+	return appendAudio(nil, frame, opus)
+}
+
+// appendAudio writes a typAudio payload into dst[:0] (reused across frames on
+// the send path to avoid a per-frame allocation) and returns it.
+func appendAudio(dst []byte, frame uint32, opus []byte) []byte {
+	dst = append(dst[:0], typAudio, 0, 0, 0, 0)
+	binary.BigEndian.PutUint32(dst[1:], frame)
+	return append(dst, opus...)
 }
 
 func stampPayload(typ byte, nanos int64) []byte {

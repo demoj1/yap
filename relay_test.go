@@ -32,6 +32,7 @@ func (n *node) addPeer(other *node, direct bool) *peer {
 	}
 	n.mu.Lock()
 	n.peers[string(p.id)] = p
+	n.rebuildRoster()
 	n.mu.Unlock()
 	return p
 }
