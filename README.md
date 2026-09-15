@@ -12,7 +12,7 @@ yap join yap://...      # friend runs this
 Everyone gets a TUI with a roster: a level meter, round-trip time and
 incoming bitrate per person (◐ marks someone reached through a relay), `↑/↓` to pick
 someone, `←/→` their volume, `m` mute yourself, `d` RNNoise on/off, `+/-` your
-Opus bitrate (12–160 kbps, live), `g` noise gate, `e` echo cancellation, `a` auto-gain (normalize your loudness), `q` quit. The mouse works too: click a tile
+Opus bitrate (12–160 kbps, live), `g` noise gate, `e` echo cancellation, `a` auto-gain, `l` lock the room (only current members stay), `q` quit. Toggles show ● on / ○ off; the mouse clicks tiles and the control row. The mouse works too: click a tile
 to pick that person (your own tile toggles mute), scroll over a tile for
 their volume (yours: bitrate), click a label in the help line (right-click
 for the opposite direction). `-name` sets what others see,

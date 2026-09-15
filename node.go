@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"sort"
@@ -43,11 +44,14 @@ type node struct {
 	byAddr map[string]*peer // source address → peer, once a packet authenticated
 	joined int64            // monotonic, so the roster keeps join order
 
-	stunCh chan []byte // STUN replies, routed out of recvLoop
-	pub    atomic.Pointer[net.UDPAddr]
-	room   *room
-	update atomic.Pointer[string]  // "update available ..." once the check found a newer release
-	roster atomic.Pointer[[]*peer] // cached sorted snapshot for the per-frame hot paths
+	stunCh  chan []byte // STUN replies, routed out of recvLoop
+	pub     atomic.Pointer[net.UDPAddr]
+	room    *room
+	update  atomic.Pointer[string]  // "update available ..." once the check found a newer release
+	roster  atomic.Pointer[[]*peer] // cached sorted snapshot for the per-frame hot paths
+	lastSay atomic.Int64            // unix nanos of the last announce; throttles vs ntfy 429
+	locked  atomic.Bool             // room lock: no new participants admitted
+	allowed map[string]bool         // IDs admitted at lock time (string(id)); nil when unlocked
 }
 
 func newNode(l link, name string, ctl *controls, set *settings) *node {
@@ -115,7 +119,14 @@ func (n *node) rendezvous() {
 	}
 }
 
+const minAnnounceGap = 4 * time.Second // ntfy free tier rate-limits; don't hammer it
+
 func (n *node) announce() {
+	last := n.lastSay.Load()
+	if last != 0 && time.Since(time.Unix(0, last)) < minAnnounceGap {
+		return
+	}
+	n.lastSay.Store(time.Now().UnixNano())
 	prev := n.pub.Load()
 	if pub, err := n.publicAddr(); err == nil {
 		n.pub.Store(pub)
@@ -133,6 +144,7 @@ func (n *node) announce() {
 	}
 	if err := n.room.say(h); err != nil {
 		log.Println("rendezvous:", err)
+		n.lastSay.Store(time.Now().Add(20 * time.Second).UnixNano()) // ntfy pushed back: wait longer
 	}
 }
 
@@ -151,6 +163,10 @@ func (n *node) onHello(h hello) bool {
 		return false
 	}
 	n.mu.Lock()
+	if n.locked.Load() && !n.allowed[string(h.ID)] {
+		n.mu.Unlock()
+		return false // room is locked to newcomers
+	}
 	old, known := n.peers[string(h.ID)]
 	if known && string(old.nonce) == string(h.Nonce) {
 		n.mu.Unlock()
@@ -509,6 +525,30 @@ func (n *node) peerList() []*peer {
 		return *r
 	}
 	return nil
+}
+
+// toggleLock locks or unlocks the room. Locking snapshots the current
+// participants (plus us): while locked, hellos from anyone else are ignored,
+// so no new person can join. Returns a line for the UI.
+func (n *node) toggleLock() string {
+	if n.locked.Load() {
+		n.locked.Store(false)
+		n.mu.Lock()
+		n.allowed = nil
+		n.mu.Unlock()
+		log.Println("room unlocked")
+		return "room unlocked — anyone with the link can join"
+	}
+	n.mu.Lock()
+	n.allowed = map[string]bool{string(n.id): true}
+	for id := range n.peers {
+		n.allowed[id] = true
+	}
+	count := len(n.allowed)
+	n.mu.Unlock()
+	n.locked.Store(true)
+	log.Printf("room locked with %d participant(s)", count)
+	return fmt.Sprintf("room LOCKED — %d here, no one new gets in", count)
 }
 
 // rebuildRoster refreshes the cached snapshot. Call with n.mu held after any
