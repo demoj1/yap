@@ -29,13 +29,20 @@ type settings struct {
 	AECSuppressActive int `json:"aec_suppress_active,omitempty"`
 }
 
-func loadSettings() *settings {
-	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Volumes: map[string]int{}}
+// configDir is where the link, settings and log live: <user config>/yap.
+func configDir() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		panic(err)
 	}
-	s.path = filepath.Join(dir, "yap", "settings.json")
+	dir = filepath.Join(dir, "yap")
+	must(os.MkdirAll(dir, 0o700))
+	return dir
+}
+
+func loadSettings() *settings {
+	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Volumes: map[string]int{}}
+	s.path = filepath.Join(configDir(), "settings.json")
 	if raw, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(raw, s) // a corrupt file just falls back to defaults
 	}
@@ -64,7 +71,6 @@ func (s *settings) save() {
 	if err != nil {
 		panic(err)
 	}
-	must(os.MkdirAll(filepath.Dir(s.path), 0o700))
 	tmp := s.path + ".tmp"
 	must(os.WriteFile(tmp, append(raw, '\n'), 0o600))
 	must(os.Rename(tmp, s.path))

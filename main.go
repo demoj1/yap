@@ -207,12 +207,7 @@ func defaultName() string {
 
 // openLog appends to <config>/yap/yap.log, starting over once it grows past 5 MB.
 func openLog() (*os.File, string) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		panic(err)
-	}
-	path := filepath.Join(dir, "yap", "yap.log")
-	must(os.MkdirAll(filepath.Dir(path), 0o700))
+	path := filepath.Join(configDir(), "yap.log")
 	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	if st, err := os.Stat(path); err == nil && st.Size() > 5<<20 {
 		flags |= os.O_TRUNC

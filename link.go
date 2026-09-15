@@ -47,11 +47,7 @@ func parseLink(s string) (link, error) {
 // loadOrCreateLink keeps the listener's link across restarts in the user
 // config dir, so a friend can keep calling the same address.
 func loadOrCreateLink(rotate bool) link {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		panic(err)
-	}
-	path := filepath.Join(dir, "yap", "link")
+	path := filepath.Join(configDir(), "link")
 	if !rotate {
 		if raw, err := os.ReadFile(path); err == nil {
 			l, err := parseLink(string(raw))
@@ -62,7 +58,6 @@ func loadOrCreateLink(rotate bool) link {
 		}
 	}
 	l := newLink()
-	must(os.MkdirAll(filepath.Dir(path), 0o700))
 	must(os.WriteFile(path, []byte(l.String()+"\n"), 0o600))
 	return l
 }
