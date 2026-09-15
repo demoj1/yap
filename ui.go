@@ -40,6 +40,7 @@ var (
 const (
 	devRefresh   = 150             // frames (~5 s) between device list refreshes
 	noReplyAfter = 3 * time.Second // a connected peer silent this long is flagged on its tile
+	wheelGap     = 5               // frames (~150 ms) between wheel steps on a knob
 )
 
 // copyToClipboard puts s on the clipboard every way that might work: OSC 52
@@ -80,9 +81,9 @@ func (m model) knobs() []knob {
 		m.n.audio.setAEC(s.AECTail, s.AECSuppress, s.AECSuppressActive)
 	}
 	return []knob{
-		{"echo tail", "ms", func() int { return s.AECTail }, func(v int) { s.AECTail = v; apply() }, 50, 100, 600},
-		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 5, -80, -10},
-		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 5, -50, -5},
+		{"echo tail", "ms", func() int { return s.AECTail }, func(v int) { s.AECTail = v; apply() }, 25, 100, 600},
+		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 2, -80, -10},
+		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 2, -50, -4},
 	}
 }
 
@@ -162,6 +163,7 @@ type model struct {
 	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
 	outputs  []string
 	tune     int            // selected row of the tuning tile
+	wheelAt  int            // frame of the last wheel step taken on a knob: one notch sends several events
 	seen     map[*peer]bool // people heard from at least once: a new one chimes in, a vanished one chimes out
 	asked    bool           // the update dialog was answered (either way)
 	doUpdate bool           // the answer was yes: main updates and restarts after the TUI exits
@@ -806,9 +808,13 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if t := g.tune; e.Y >= t.top+2 && e.Y < t.top+2+t.rows && e.X >= t.x0 && e.X < t.x1 {
 		m.tune = e.Y - t.top - 2
 		switch {
+		case wheel && m.frame-m.wheelAt < wheelGap:
+			return m, nil // the rest of this notch's burst
 		case wheel && up:
+			m.wheelAt = m.frame
 			return m.turn(+1)
 		case wheel:
+			m.wheelAt = m.frame
 			return m.turn(-1)
 		case e.X < (t.x0+t.x1)/2:
 			return m.turn(-1)
