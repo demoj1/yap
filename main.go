@@ -61,6 +61,7 @@ func main() {
 	plain := fs.Bool("plain", false, "plain logs instead of the TUI")
 	nodenoise := fs.Bool("nodenoise", false, "start with RNNoise off")
 	nogate := fs.Bool("nogate", false, "start with the noise gate off")
+	aecOn := fs.Bool("aec", false, "enable acoustic echo cancellation (for speakers)")
 	mic := fs.String("mic", set.Mic, "microphone name or prefix (default: system default)")
 	out := fs.String("out", set.Out, "speaker name or prefix (default: system default)")
 	fs.Usage = usage
@@ -70,6 +71,7 @@ func main() {
 	ctl.bitrate.Store(int32(set.Bitrate))
 	ctl.denoise.Store(set.Denoise && !*nodenoise)
 	ctl.gate.Store(set.Gate && !*nogate)
+	ctl.aec.Store(set.AEC || *aecOn)
 
 	var l link
 	switch os.Args[1] {
@@ -101,6 +103,9 @@ func main() {
 		host, runtime.GOOS, runtime.GOARCH, runtime.Version(), runtime.NumCPU(), *name, filepath.Dir(set.path))
 	log.Printf("settings: bitrate %d · denoise %v · gate %v · mic %q · out %q · %d remembered volumes",
 		set.Bitrate, ctl.denoise.Load(), ctl.gate.Load(), set.Mic, set.Out, len(set.Volumes))
+	if ctl.aec.Load() {
+		log.Println("echo cancellation: on")
+	}
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: *port})
 	if err != nil {
@@ -117,6 +122,7 @@ func main() {
 		log.Fatal("audio:", err)
 	}
 	defer n.audio.Close()
+	n.audio.aecOn.Store(ctl.aec.Load())
 	log.Println("audio:", n.audio.describe())
 	go func() { // never blocks startup; the TUI shows it and the log keeps it
 		if hint := checkUpdate(); hint != "" {

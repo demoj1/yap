@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/demoj1/yap/internal/aec"
 	"github.com/gen2brain/malgo"
 )
 
@@ -98,6 +99,9 @@ type audio struct {
 
 	mu       sync.Mutex // guards a device swap against Close
 	mic, out string     // current device names, "" = system default
+
+	aec   *aec.Canceller // echo canceller, fed in onData; nil until built
+	aecOn atomic.Bool    // whether to run it
 }
 
 // openAudio starts a full-duplex 48 kHz mono device. Captured 20 ms frames
@@ -108,6 +112,7 @@ func openAudio(micName, outName string) (*audio, error) {
 		return nil, err
 	}
 	a := &audio{ctx: ctx, frames: make(chan []int16, 8), play: newPCMQueue(), mic: micName, out: outName}
+	a.aec = aec.New(frameSize/2, sampleRate/10, sampleRate) // 10 ms frames, 100 ms echo tail
 	if err := a.startDevice(); err != nil {
 		ctx.Uninit()
 		ctx.Free()
@@ -177,6 +182,9 @@ func (a *audio) onData(out, in []byte, count uint32) {
 	a.play.pull(spk)
 	a.spkPeak.observe(spk)
 	mic := s16(in, count)
+	if a.aecOn.Load() && a.aec != nil && int(count) == frameSize/2 {
+		a.aec.Process(mic, spk) // remove what the speakers are playing from the mic
+	}
 	a.micPeak.observe(mic)
 	a.acc = append(a.acc, mic...)
 	for len(a.acc) >= frameSize {
@@ -203,6 +211,9 @@ func (a *audio) Close() {
 	}
 	a.ctx.Uninit()
 	a.ctx.Free()
+	if a.aec != nil {
+		a.aec.Close()
+	}
 }
 
 // describe names the devices actually in use, resolving "" to the system

@@ -17,6 +17,7 @@ type settings struct {
 	Bitrate int            `json:"bitrate,omitempty"` // kbps
 	Denoise bool           `json:"denoise"`
 	Gate    bool           `json:"gate"`
+	AEC     bool           `json:"aec"`
 	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
 }
 
