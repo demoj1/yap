@@ -63,6 +63,37 @@ func copyToClipboard(s string) {
 	}
 }
 
+// knob is one tunable number on the tuning tile.
+type knob struct {
+	name, unit   string
+	get          func() int
+	set          func(int)
+	step, lo, hi int
+}
+
+// knobs lists the echo canceller settings the tuning tile edits; every
+// change is saved and applied live.
+func (m model) knobs() []knob {
+	s := m.n.set
+	apply := func() {
+		s.save()
+		m.n.audio.setAEC(s.AECTail, s.AECSuppress, s.AECSuppressActive)
+	}
+	return []knob{
+		{"echo tail", "ms", func() int { return s.AECTail }, func(v int) { s.AECTail = v; apply() }, 50, 100, 600},
+		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 5, -80, -10},
+		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 5, -50, -5},
+	}
+}
+
+// turn nudges the selected knob by dir steps within its range.
+func (m model) turn(dir int) (tea.Model, tea.Cmd) {
+	k := m.knobs()[m.tune]
+	v := max(k.lo, min(k.hi, k.get()+dir*k.step))
+	k.set(v)
+	return m.note(fmt.Sprintf("%s %d %s", k.name, v, k.unit)), nil
+}
+
 // hot renders word with its hotkey letter highlighted in place, so the key
 // is read off the label itself: "mic" with a lit m, "gain" with a lit a.
 func hot(word, key string) string {
@@ -130,6 +161,7 @@ type model struct {
 	height   int             // terminal rows: the log fills whatever the controls leave
 	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
 	outputs  []string
+	tune     int            // selected row of the tuning tile
 	seen     map[*peer]bool // people heard from at least once: a new one chimes in, a vanished one chimes out
 	asked    bool           // the update dialog was answered (either way)
 	doUpdate bool           // the answer was yes: main updates and restarts after the TUI exits
@@ -406,6 +438,12 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 	case "c":
 		copyToClipboard(m.n.link.String())
 		return m.note("link copied"), nil
+	case "tab":
+		m.tune = (m.tune + 1) % len(m.knobs())
+	case "[":
+		return m.turn(-1)
+	case "]":
+		return m.turn(+1)
 	case "d":
 		ctl.denoise.Store(!ctl.denoise.Load())
 		m.n.set.Denoise = ctl.denoise.Load()
@@ -471,10 +509,11 @@ type geometry struct {
 	linkRow                             int   // a click on the link copies it
 	ctl                                 []seg // toggles, actions and the update prompt, each on its row
 	dev                                 [2]devBox
+	tune                                devBox // the tuning tile: wheel turns a row, click left/right of the middle turns it down/up
 }
 
 const (
-	tileH   = 7 // halo, border, 3 lines, border, halo
+	tileH   = 5 // border, 3 lines, border
 	leftPad = 2
 )
 
@@ -627,6 +666,23 @@ func (m model) render() ([]string, geometry) {
 		add(ln)
 	}
 
+	// Tuning tile: the echo canceller knobs, one per row, saved as they turn.
+	knobs := m.knobs()
+	rows := []string{bold.Render("tuning") + dim.Render("   tab picks · [ ] turn · wheel/click")}
+	for i, k := range knobs {
+		val := fmt.Sprintf("%d %s", k.get(), k.unit)
+		pad := strings.Repeat(" ", max(1, dw-4-len([]rune(k.name))-len(val)))
+		if i == m.tune {
+			rows = append(rows, selSt.Render("▸ "+k.name+pad+val))
+		} else {
+			rows = append(rows, dim.Render("  "+k.name+pad+val))
+		}
+	}
+	g.tune = devBox{len(lines), leftPad, leftPad + stride, len(knobs)}
+	for _, ln := range strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(tileSt.Width(dw).Render(strings.Join(rows, "\n"))), "\n") {
+		add(ln)
+	}
+
 	if m.notice != "" && m.frame-m.noticeAt < 60 {
 		add("  " + yellow.Render("▸ "+m.notice))
 	} else {
@@ -747,6 +803,19 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if !wheel && e.Action != tea.MouseActionPress {
 		return m, nil
 	}
+	if t := g.tune; e.Y >= t.top+2 && e.Y < t.top+2+t.rows && e.X >= t.x0 && e.X < t.x1 {
+		m.tune = e.Y - t.top - 2
+		switch {
+		case wheel && up:
+			return m.turn(+1)
+		case wheel:
+			return m.turn(-1)
+		case e.X < (t.x0+t.x1)/2:
+			return m.turn(-1)
+		default:
+			return m.turn(+1)
+		}
+	}
 	if !wheel { // a device row?
 		for i, d := range g.dev {
 			row := e.Y - d.top - 2
@@ -818,8 +887,8 @@ var (
 	tileMeSt  = tileSt.BorderForeground(lipgloss.Color("42"))
 )
 
-// Speech levels (meter 0..1) at which a tile starts to "radiate": the border
-// goes thick and a halo of dots grows around it, fading with the meter.
+// Speech levels (meter 0..1) at which a tile's border turns into dots of
+// growing weight, fading back with the meter.
 const (
 	speakLvl = 0.2
 	loudLvl  = 0.45
@@ -827,7 +896,7 @@ const (
 )
 
 // tile draws one card: name + status, the VU bar with talk time at its
-// right, and a footer line — wrapped in a halo that reacts to the voice.
+// right, and a footer line — inside a border that reacts to the voice.
 func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot string) string {
 	nameSt := bold
 	if mt.level >= speakLvl {
@@ -838,33 +907,23 @@ func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot st
 		head += " " + status
 	}
 	talk = fmt.Sprintf("%8s", talk)
-	if mt.level >= speakLvl {
-		st = st.Border(lipgloss.ThickBorder())
+	// While they speak the frame itself turns into dots that grow with the
+	// level (· ∙ •); silence brings the plain rounded border back.
+	switch {
+	case mt.level >= peakLvl:
+		st = st.Border(dotBorder("•")).BorderForeground(lipgloss.Color("46"))
+	case mt.level >= loudLvl:
+		st = st.Border(dotBorder("∙")).BorderForeground(lipgloss.Color("42"))
+	case mt.level >= speakLvl:
+		st = st.Border(dotBorder("·")).BorderForeground(lipgloss.Color("35"))
 	}
-	card := st.Width(w).Render(fmt.Sprintf("%s\n%s %s\n%s", head, mt.bar(w-6-len(talk)-1), dim.Render(talk), foot))
-	return halo(card, mt.level)
+	return st.Width(w).Render(fmt.Sprintf("%s\n%s %s\n%s", head, mt.bar(w-6-len(talk)-1), dim.Render(talk), foot))
 }
 
-// halo rings a card with one row/column of dots whose weight follows the
-// voice level; silence leaves blank margins, so the grid never shifts.
-func halo(card string, level float64) string {
-	ch, st := " ", dim
-	switch {
-	case level >= peakLvl:
-		ch, st = "•", green.Bold(true)
-	case level >= loudLvl:
-		ch, st = "∙", green
-	case level >= speakLvl:
-		ch = "·"
-	}
-	rows := strings.Split(card, "\n")
-	ring := st.Render(strings.Repeat(ch, lipgloss.Width(rows[0])+2))
-	out := make([]string, 0, len(rows)+2)
-	out = append(out, ring)
-	for _, r := range rows {
-		out = append(out, st.Render(ch)+r+st.Render(ch))
-	}
-	return strings.Join(append(out, ring), "\n")
+// dotBorder is a border drawn entirely with one character.
+func dotBorder(ch string) lipgloss.Border {
+	return lipgloss.Border{Top: ch, Bottom: ch, Left: ch, Right: ch,
+		TopLeft: ch, TopRight: ch, BottomLeft: ch, BottomRight: ch}
 }
 
 // deviceTile lists devices under a hotkey-lit title, marking the one in use.

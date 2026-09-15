@@ -100,8 +100,25 @@ type audio struct {
 	mu       sync.Mutex // guards a device swap against Close
 	mic, out string     // current device names, "" = system default
 
-	aec   *aec.Canceller // echo canceller, fed in onData; nil until built
-	aecOn atomic.Bool    // whether to run it
+	aecMu   sync.Mutex     // guards aec against a rebuild while onData runs it
+	aecTail int            // samples the current canceller was built with
+	aec     *aec.Canceller // echo canceller, fed in onData; nil until built
+	aecOn   atomic.Bool    // whether to run it
+}
+
+// setAEC applies the echo canceller knobs: a new tail (ms) rebuilds the
+// adaptive filter (it re-converges in a second or two), suppression levels
+// take effect at once.
+func (a *audio) setAEC(tailMS, suppress, active int) {
+	a.aecMu.Lock()
+	defer a.aecMu.Unlock()
+	if tail := sampleRate * tailMS / 1000; a.aec == nil || tail != a.aecTail {
+		if a.aec != nil {
+			a.aec.Close()
+		}
+		a.aec, a.aecTail = aec.New(frameSize/2, tail, sampleRate), tail
+	}
+	a.aec.SetSuppress(suppress, active)
 }
 
 // openAudio starts a full-duplex 48 kHz mono device. Captured 20 ms frames
@@ -112,7 +129,10 @@ func openAudio(micName, outName string) (*audio, error) {
 		return nil, err
 	}
 	a := &audio{ctx: ctx, frames: make(chan []int16, 8), play: newPCMQueue(), mic: micName, out: outName}
-	a.aec = aec.New(frameSize/2, sampleRate/10, sampleRate) // 10 ms frames, 100 ms echo tail
+	// 10 ms frames, 300 ms echo tail by default: the echo of what we hand to
+	// the device now comes back in the mic after output + input latency plus
+	// the room — 30–60 ms on a wired card, 150–250 ms on Bluetooth headsets.
+	a.setAEC(300, -60, -30)
 	if err := a.startDevice(); err != nil {
 		ctx.Uninit()
 		ctx.Free()
@@ -182,8 +202,10 @@ func (a *audio) onData(out, in []byte, count uint32) {
 	a.play.pull(spk)
 	a.spkPeak.observe(spk)
 	mic := s16(in, count)
-	if a.aecOn.Load() && a.aec != nil && int(count) == frameSize/2 {
+	if a.aecOn.Load() && int(count) == frameSize/2 {
+		a.aecMu.Lock()
 		a.aec.Process(mic, spk) // remove what the speakers are playing from the mic
+		a.aecMu.Unlock()
 	}
 	a.micPeak.observe(mic)
 	a.acc = append(a.acc, mic...)
@@ -211,9 +233,9 @@ func (a *audio) Close() {
 	}
 	a.ctx.Uninit()
 	a.ctx.Free()
-	if a.aec != nil {
-		a.aec.Close()
-	}
+	a.aecMu.Lock()
+	a.aec.Close()
+	a.aecMu.Unlock()
 }
 
 // describe names the devices actually in use, resolving "" to the system

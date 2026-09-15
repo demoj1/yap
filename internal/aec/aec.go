@@ -43,7 +43,17 @@ func New(frame, tail, sampleRate int) *Canceller {
 	C.speex_echo_ctl(c.echo, C.SPEEX_ECHO_SET_SAMPLING_RATE, unsafe.Pointer(&rate))
 	c.pre = C.speex_preprocess_state_init(C.int(frame), rate)
 	C.speex_preprocess_ctl(c.pre, C.SPEEX_PREPROCESS_SET_ECHO_STATE, unsafe.Pointer(c.echo))
+	c.SetSuppress(-60, -30)
 	return c
+}
+
+// SetSuppress sets the residual echo suppression beyond the adaptive filter,
+// in dB: while the far end is silent / while it speaks. Speex defaults
+// (-40/-15) leave an audible tail on speakers.
+func (c *Canceller) SetSuppress(silent, active int) {
+	s, a := C.int(silent), C.int(active)
+	C.speex_preprocess_ctl(c.pre, C.SPEEX_PREPROCESS_SET_ECHO_SUPPRESS, unsafe.Pointer(&s))
+	C.speex_preprocess_ctl(c.pre, C.SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE, unsafe.Pointer(&a))
 }
 
 // Process removes play (the speaker frame) from rec (the mic frame) in place,

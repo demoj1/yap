@@ -145,6 +145,7 @@ func main() {
 	}
 	defer n.audio.Close()
 	n.audio.aecOn.Store(ctl.aec.Load())
+	n.audio.setAEC(set.AECTail, set.AECSuppress, set.AECSuppressActive)
 	log.Println("audio:", n.audio.describe())
 	go func() { // never blocks startup; the TUI asks, the log keeps it
 		if tag := checkUpdate(); tag != "" {

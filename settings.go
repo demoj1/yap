@@ -21,6 +21,12 @@ type settings struct {
 	AGC     bool           `json:"agc"`
 	PTT     bool           `json:"ptt"`               // push-to-talk: mic open only while space is held
 	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
+
+	// Echo canceller knobs, tuned from the TUI: filter tail in ms, residual
+	// suppression in dB while the far end is silent / while it speaks.
+	AECTail           int `json:"aec_tail,omitempty"`
+	AECSuppress       int `json:"aec_suppress,omitempty"`
+	AECSuppressActive int `json:"aec_suppress_active,omitempty"`
 }
 
 func loadSettings() *settings {
@@ -38,6 +44,15 @@ func loadSettings() *settings {
 	}
 	if s.Bitrate == 0 {
 		s.Bitrate = 96
+	}
+	if s.AECTail == 0 {
+		s.AECTail = 300
+	}
+	if s.AECSuppress == 0 {
+		s.AECSuppress = -60
+	}
+	if s.AECSuppressActive == 0 {
+		s.AECSuppressActive = -30
 	}
 	return s
 }
