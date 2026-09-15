@@ -56,6 +56,7 @@ type node struct {
 	room    *room
 	update  atomic.Pointer[string]          // "update available ..." once the check found a newer release
 	roster  atomic.Pointer[[]*peer]         // cached sorted snapshot for the per-frame hot paths
+	folks   atomic.Pointer[[]*peer]         // roster minus relays: the people we talk to
 	lastSay atomic.Int64                    // unix nanos of the last announce; throttles vs ntfy 429
 	relay   bool                            // relay/daemon mode: no audio, just forward for everyone
 	locked  atomic.Bool                     // room lock: no new participants admitted
@@ -293,21 +294,20 @@ func (n *node) onHello(h hello) bool {
 // over people, and among equals the lowest round trip; an unmeasured one
 // ranks last.
 func (n *node) relayFor(p *peer) *peer {
+	better := func(a, b *peer) bool { // a relay beats a person; then a measured, lower round trip
+		if a.relay != b.relay {
+			return a.relay
+		}
+		ra, rb := a.rttUS.Load(), b.rttUS.Load()
+		if ra == 0 || rb == 0 {
+			return ra != 0
+		}
+		return ra < rb
+	}
 	var best *peer
-	var bestRank int64
 	for _, r := range n.peerList() {
-		if r == p || !r.direct() || !(r.relay || r.reaches(p.id)) {
-			continue
-		}
-		rank := r.rttUS.Load()
-		if rank == 0 {
-			rank = math.MaxInt32
-		}
-		if !r.relay {
-			rank += math.MaxInt32
-		}
-		if best == nil || rank < bestRank {
-			best, bestRank = r, rank
+		if r != p && r.direct() && (r.relay || r.reaches(p.id)) && (best == nil || better(r, best)) {
+			best = r
 		}
 	}
 	return best
@@ -557,8 +557,8 @@ func (n *node) sendState() {
 	if n.ctl.silenced() {
 		flags |= stateMuted
 	}
-	for _, p := range n.peerList() {
-		if !p.connected() || p.relay {
+	for _, p := range n.people() {
+		if !p.connected() {
 			continue
 		}
 		var link byte
@@ -613,14 +613,8 @@ func (n *node) sendLoop() {
 		if !isQuiet(f) {
 			n.talkMS.Add(frameMS)
 		}
-		peers := n.peerList()
-		people := 0
-		for _, p := range peers {
-			if !p.relay {
-				people++
-			}
-		}
-		if people == 0 {
+		people := n.people() // relays only forward; audio addressed to them is dropped
+		if len(people) == 0 {
 			continue
 		}
 		if b := int(n.ctl.bitrate.Load()); b != bitrate {
@@ -629,10 +623,8 @@ func (n *node) sendLoop() {
 		}
 		payload = appendAudio(payload, frame, enc.encode(f))
 		frame++
-		for _, p := range peers {
-			if !p.relay { // a relay only forwards; audio addressed to it is dropped
-				n.sendTo(p, payload)
-			}
+		for _, p := range people {
+			n.sendTo(p, payload)
 		}
 	}
 }
@@ -685,10 +677,7 @@ func (n *node) mixLoop() {
 				mixInto(mix, cueFrame, 100)
 				got = true
 			}
-			for _, p := range n.peerList() {
-				if p.relay {
-					continue
-				}
+			for _, p := range n.people() {
 				pcm := p.nextFrame()
 				if pcm == nil {
 					continue
@@ -748,6 +737,14 @@ func (n *node) peerList() []*peer {
 	return nil
 }
 
+// people is peerList without relays: those who send and hear audio.
+func (n *node) people() []*peer {
+	if r := n.folks.Load(); r != nil {
+		return *r
+	}
+	return nil
+}
+
 // toggleLock locks or unlocks the room. Locking snapshots the current
 // participants (plus us): while locked, hellos from anyone else are ignored,
 // so no new person can join. Returns a line for the UI.
@@ -759,10 +756,8 @@ func (n *node) toggleLock() string {
 		return "room unlocked — anyone with the link can join"
 	}
 	allowed := map[string]bool{n.name: true}
-	for _, p := range n.peerList() {
-		if !p.relay {
-			allowed[p.name] = true
-		}
+	for _, p := range n.people() {
+		allowed[p.name] = true
 	}
 	if len(allowed) < 2 {
 		return "nobody here yet — lock once your people have joined"
@@ -782,6 +777,13 @@ func (n *node) rebuildRoster() {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].joinedAt < out[j].joinedAt })
 	n.roster.Store(&out)
+	folks := make([]*peer, 0, len(out))
+	for _, p := range out {
+		if !p.relay {
+			folks = append(folks, p)
+		}
+	}
+	n.folks.Store(&folks)
 }
 
 // setVolume updates a peer's live volume and remembers it by name.
@@ -829,9 +831,6 @@ func (n *node) stunQuery(server string) (*net.UDPAddr, error) {
 	}
 }
 
-// cycleDevice switches the mic (kind Capture) or speaker (kind Playback) to
-// the next available one, wrapping through "" = system default, and
-// remembers the choice. Returns a short label for the UI.
 // deviceNames lists what the picker offers for kind: "" (system default)
 // first, then every device, minus loopback monitors for the microphone.
 // cur is the index of the device in use.

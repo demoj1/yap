@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gen2brain/malgo"
 )
@@ -40,54 +41,34 @@ func printDevices() {
 }
 
 func hasPrefixFold(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	for i := 0; i < len(prefix); i++ {
-		if lower(s[i]) != lower(prefix[i]) {
-			return false
-		}
-	}
-	return true
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }
 
-func lower(b byte) byte {
-	if b >= 'A' && b <= 'Z' {
-		return b + 32
-	}
-	return b
-}
-
-// deviceID resolves a device name to a copied ID within an existing context.
-// The copy is stable (not a moving slice element) so it can be pinned and
-// handed to C. Returns nil for "" or no match, i.e. the system default.
+// deviceID resolves a device name to a copied ID within an existing context:
+// "" is the system default, otherwise an exact name, then a case-insensitive
+// prefix. The copy is stable (not a moving slice element) so it can be
+// pinned and handed to C. nil means let miniaudio choose.
 func deviceID(ctx malgo.Context, kind malgo.DeviceType, name string) *malgo.DeviceID {
 	devs, err := ctx.Devices(kind)
 	if err != nil {
 		return nil
 	}
-	if name == "" { // system default: the device miniaudio stars
+	first := func(ok func(d *malgo.DeviceInfo) bool) *malgo.DeviceID {
 		for i := range devs {
-			if devs[i].IsDefault != 0 {
+			if ok(&devs[i]) {
 				id := devs[i].ID
 				return &id
 			}
 		}
-		return nil // none flagged: let miniaudio choose
+		return nil
 	}
-	for i := range devs {
-		if devs[i].Name() == name {
-			id := devs[i].ID
-			return &id
-		}
+	if name == "" {
+		return first(func(d *malgo.DeviceInfo) bool { return d.IsDefault != 0 })
 	}
-	for i := range devs {
-		if hasPrefixFold(devs[i].Name(), name) {
-			id := devs[i].ID
-			return &id
-		}
+	if id := first(func(d *malgo.DeviceInfo) bool { return d.Name() == name }); id != nil {
+		return id
 	}
-	return nil
+	return first(func(d *malgo.DeviceInfo) bool { return hasPrefixFold(d.Name(), name) })
 }
 
 // isMonitor reports whether a capture device is a PulseAudio/PipeWire monitor

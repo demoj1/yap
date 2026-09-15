@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -98,31 +99,8 @@ func (m model) turn(dir int) (tea.Model, tea.Cmd) {
 // hot renders word with its hotkey letter highlighted in place, so the key
 // is read off the label itself: "mic" with a lit m, "gain" with a lit a.
 func hot(word, key string) string {
-	if i := strings.Index(word, key); i >= 0 {
-		return word[:i] + hotSt.Render(key) + word[i+len(key):]
-	}
-	return hotSt.Render(key) + " " + word
-}
-
-// people are the peers that get a tile: everyone but relays.
-func (m model) people() []*peer {
-	var out []*peer
-	for _, p := range m.n.peerList() {
-		if !p.relay {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func (m model) relays() []*peer {
-	var out []*peer
-	for _, p := range m.n.peerList() {
-		if p.relay {
-			out = append(out, p)
-		}
-	}
-	return out
+	i := strings.Index(word, key) // every hotkey is a letter of its word
+	return word[:i] + hotSt.Render(key) + word[i+len(key):]
 }
 
 // verText is a peer's announced build; anything older than that says so.
@@ -155,20 +133,38 @@ type model struct {
 	notice   string
 	noticeAt int
 	mic      meter
-	meters   map[*peer]*meter
-	rates    map[*peer]*rate // incoming kbps per peer, sampled once a second
+	views    map[*peer]*view // per-peer screen state: meter, rates, whether they chimed in
 	cursor   int             // selected tile in the roster
 	width    int             // terminal columns, for the tile grid
 	height   int             // terminal rows: the log fills whatever the controls leave
 	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
 	outputs  []string
-	tune     int            // selected row of the tuning tile
-	cache    *panelCache    // device + tuning tiles, rebuilt only when they change
-	seen     map[*peer]bool // people heard from at least once: a new one chimes in, a vanished one chimes out
-	asked    bool           // the update dialog was answered (either way)
-	doUpdate bool           // the answer was yes: main updates and restarts after the TUI exits
+	tune     int         // selected row of the tuning tile
+	cache    *panelCache // device + tuning tiles, rebuilt only when they change
+	asked    bool        // the update dialog was answered (either way)
+	doUpdate bool        // the answer was yes: main updates and restarts after the TUI exits
 	logs     []string
 	frame    int
+}
+
+// view is what the screen keeps about one peer between frames.
+type view struct {
+	meter meter
+	rate  rate
+	seen  bool // heard from at least once: they chimed in, and will chime out
+	tile  tileCache
+}
+
+// tileCache keeps a rendered tile until anything visible on it changes:
+// laying out a bordered box is the costliest thing a frame does, and most
+// tiles sit still most of the time.
+type tileCache struct{ key, out string }
+
+func (c *tileCache) get(key string, render func() string) string {
+	if c.key != key {
+		c.key, c.out = key, render()
+	}
+	return c.out
 }
 
 // rate turns a peer's cumulative counters into what the status bar shows:
@@ -233,10 +229,28 @@ func (m *meter) feed(db float64, frame int) {
 
 func (m meter) String() string { return m.bar(meterLen) }
 
+// cells quantizes the meter to what an n-cell bar shows: lit cells and the
+// peak-hold cell. Two meters with equal cells draw the same bar.
+func (m meter) cells(n int) (lit, hold int) {
+	return int(m.level*float64(n) + 0.5), int(m.hold*float64(n) + 0.5)
+}
+
+// band is the speech level band a tile reacts to: 0 silent, then · ∙ •.
+func (m meter) band() int {
+	switch {
+	case m.level >= peakLvl:
+		return 3
+	case m.level >= loudLvl:
+		return 2
+	case m.level >= speakLvl:
+		return 1
+	}
+	return 0
+}
+
 func (m meter) bar(n int) string {
 	var b strings.Builder
-	lit := int(m.level*float64(n) + 0.5)
-	hold := int(m.hold*float64(n) + 0.5)
+	lit, hold := m.cells(n)
 	for i := 0; i < n; i++ {
 		st := dim
 		switch {
@@ -262,7 +276,7 @@ func (m meter) bar(n int) string {
 // newUI builds the screen; notice, if any, is shown for the first ~10 s.
 func newUI(n *node, logPath, notice string) *ui {
 	u := &ui{}
-	m := model{n: n, logPath: logPath, meters: map[*peer]*meter{}, rates: map[*peer]*rate{}, seen: map[*peer]bool{}, cache: &panelCache{},
+	m := model{n: n, logPath: logPath, views: map[*peer]*view{}, cache: &panelCache{},
 		notice: notice, noticeAt: 200} // a notice lives 60 frames past noticeAt: this one for ~13 s
 	u.prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	return u
@@ -299,43 +313,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.outputs, _ = m.n.deviceNames(malgo.Playback)
 		}
 		m.mic.feed(m.n.audio.micPeak.take(), m.frame)
-		peers := m.n.peerList()
 		alive := map[*peer]bool{}
-		now := time.Time(msg)
-		for _, p := range peers {
+		for _, p := range m.n.peerList() {
 			alive[p] = true
-			mt := m.meters[p]
-			if mt == nil {
-				mt = &meter{}
-				m.meters[p] = mt
+			v := m.views[p]
+			if v == nil {
+				v = &view{}
+				m.views[p] = v
 			}
-			mt.feed(p.level.take(), m.frame)
-			r := m.rates[p]
-			if r == nil {
-				r = &rate{}
-				m.rates[p] = r
-			}
-			r.feed(p.rxBytes.Load(), drops(p), now)
-		}
-		for p := range m.meters {
-			if !alive[p] {
-				delete(m.meters, p)
-				delete(m.rates, p)
-			}
-		}
-		for _, p := range peers { // chimes: a person arriving or leaving
-			if !p.relay && p.connected() && !m.seen[p] {
-				m.seen[p] = true
+			v.meter.feed(p.level.take(), m.frame)
+			v.rate.feed(p.rxBytes.Load(), drops(p), time.Time(msg))
+			if !v.seen && !p.relay && p.connected() { // a person arrived
+				v.seen = true
 				m.n.cue(cueJoin)
 			}
 		}
-		for p := range m.seen {
+		for p, v := range m.views {
 			if !alive[p] {
-				delete(m.seen, p)
-				m.n.cue(cueLeave)
+				if v.seen {
+					m.n.cue(cueLeave)
+				}
+				delete(m.views, p)
 			}
 		}
-		if np := len(m.people()); m.cursor >= np {
+		if np := len(m.n.people()); m.cursor >= np {
 			m.cursor = max(0, np-1)
 		}
 		return m, tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -358,48 +359,80 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 const volStep = 3 // percent per volume nudge
 
-func onOff(b bool) string {
-	if b {
-		return "on"
-	}
-	return "off"
-}
-
 // note flashes a line so every action has visible feedback.
 func (m model) note(s string) model { m.notice, m.noticeAt = s, m.frame; return m }
 
-// step nudges the selected peer's volume, or the bitrate, up or down.
-func (m model) step(what string, up bool) (tea.Model, tea.Cmd) {
-	ctl := m.n.ctl
-	if what == "bitrate" {
-		if up {
-			ctl.stepBitrate(+1)
-		} else {
-			ctl.stepBitrate(-1)
-		}
-		m.n.set.Bitrate = int(ctl.bitrate.Load())
-		m.n.set.save()
-		return m.note(fmt.Sprintf("your bitrate %d kbps", ctl.bitrate.Load())), nil
-	}
-	peers := m.people()
-	if m.cursor >= len(peers) {
+// nudgeVolume moves the selected person's volume by dir steps.
+func (m model) nudgeVolume(dir int) (tea.Model, tea.Cmd) {
+	people := m.n.people()
+	if m.cursor >= len(people) {
 		return m, nil
 	}
-	p := peers[m.cursor]
-	v := int(p.volume.Load())
-	if up {
-		v = min(200, v+volStep)
-	} else {
-		v = max(0, v-volStep)
-	}
+	p := people[m.cursor]
+	v := max(0, min(200, int(p.volume.Load())+dir*volStep))
 	m.n.setVolume(p, v)
 	return m.note(fmt.Sprintf("%s volume %d%%", p.name, v)), nil
 }
 
+// nudgeBitrate moves our bitrate one notch and remembers it.
+func (m model) nudgeBitrate(dir int) (tea.Model, tea.Cmd) {
+	m.n.ctl.stepBitrate(dir)
+	m.n.set.Bitrate = int(m.n.ctl.bitrate.Load())
+	m.n.set.save()
+	return m.note(fmt.Sprintf("your bitrate %d kbps", m.n.set.Bitrate)), nil
+}
+
+// toggle is one on/off switch: its key, label, state, what flipping it does
+// (returning the notice), and a live reading shown while it is on.
+type toggle struct {
+	key, label string
+	on         func() bool
+	flip       func() string
+	live       func() string
+	offRed     bool // off is the alarming state (an open mic that is muted)
+}
+
+// toggles is the single list behind the chip row and the letter keys.
+func (m model) toggles() []toggle {
+	ctl, set, n := m.n.ctl, m.n.set, m.n
+	onOff := func(b bool) string { return map[bool]string{true: "on", false: "off"}[b] }
+	// saved flips a setting that is remembered across runs; after runs once it is applied.
+	saved := func(b *atomic.Bool, remembered *bool, name string, after func()) func() string {
+		return func() string {
+			b.Store(!b.Load())
+			*remembered = b.Load()
+			set.save()
+			if after != nil {
+				after()
+			}
+			return name + " " + onOff(b.Load())
+		}
+	}
+	return []toggle{
+		{"m", "mic", func() bool { return !ctl.muted.Load() }, func() string {
+			ctl.muted.Store(!ctl.muted.Load())
+			n.sendState()
+			return "mic " + map[bool]string{true: "MUTED", false: "on"}[ctl.muted.Load()]
+		}, nil, true},
+		{"d", "denoise", ctl.denoise.Load, saved(&ctl.denoise, &set.Denoise, "denoise", nil), nil, false},
+		{"g", "gate", ctl.gate.Load, saved(&ctl.gate, &set.Gate, "noise gate", nil),
+			func() string { return map[bool]string{true: "open", false: "shut"}[n.gateOpen.Load()] }, false},
+		{"e", "echo", ctl.aec.Load, saved(&ctl.aec, &set.AEC, "echo cancel", func() { n.audio.aecOn.Store(ctl.aec.Load()) }),
+			func() string { return fmt.Sprintf("−%.0f dB", max(0, math.Float64frombits(n.audio.aecDB.Load()))) }, false},
+		{"a", "gain", ctl.agc.Load, saved(&ctl.agc, &set.AGC, "auto-gain", nil),
+			func() string { return fmt.Sprintf("×%.1f", math.Float64frombits(n.agcGain.Load())) }, false},
+		{"l", "lock", n.locked.Load, n.toggleLock, nil, false},
+		{"p", "ptt", ctl.ptt.Load, saved(&ctl.ptt, &set.PTT, "push-to-talk (hold space)", n.sendState), nil, false},
+	}
+}
+
 // act performs one keyboard action; mouse events are translated into these.
 func (m model) act(key string) (tea.Model, tea.Cmd) {
-	ctl := m.n.ctl
-	peers := m.people()
+	for _, t := range m.toggles() {
+		if t.key == key {
+			return m.note(t.flip()), nil
+		}
+	}
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -416,30 +449,17 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		m.cursor = max(0, m.cursor-1)
 	case "down", "j":
-		m.cursor = min(max(0, len(peers)-1), m.cursor+1)
+		m.cursor = min(max(0, len(m.n.people())-1), m.cursor+1)
 	case "right":
-		return m.step("volume", true)
+		return m.nudgeVolume(+1)
 	case "left":
-		return m.step("volume", false)
+		return m.nudgeVolume(-1)
 	case "+", "=":
-		return m.step("bitrate", true)
+		return m.nudgeBitrate(+1)
 	case "-", "_":
-		return m.step("bitrate", false)
-	case "m":
-		ctl.muted.Store(!ctl.muted.Load())
-		m.n.sendState()
-		return m.note("mic " + map[bool]string{true: "MUTED", false: "on"}[ctl.muted.Load()]), nil
-	case "p":
-		ctl.ptt.Store(!ctl.ptt.Load())
-		m.n.set.PTT = ctl.ptt.Load()
-		m.n.set.save()
-		m.n.sendState()
-		if ctl.ptt.Load() {
-			return m.note("push-to-talk on — hold space to speak"), nil
-		}
-		return m.note("push-to-talk off — mic is open"), nil
+		return m.nudgeBitrate(-1)
 	case " ":
-		if ctl.ptt.Load() {
+		if ctl := m.n.ctl; ctl.ptt.Load() {
 			wasTalking := ctl.talking()
 			ctl.pressTalk()
 			if !wasTalking {
@@ -455,29 +475,6 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 		return m.turn(-1)
 	case "]":
 		return m.turn(+1)
-	case "d":
-		ctl.denoise.Store(!ctl.denoise.Load())
-		m.n.set.Denoise = ctl.denoise.Load()
-		m.n.set.save()
-		return m.note("denoise " + onOff(ctl.denoise.Load())), nil
-	case "g":
-		ctl.gate.Store(!ctl.gate.Load())
-		m.n.set.Gate = ctl.gate.Load()
-		m.n.set.save()
-		return m.note("noise gate " + onOff(ctl.gate.Load())), nil
-	case "e":
-		ctl.aec.Store(!ctl.aec.Load())
-		m.n.audio.aecOn.Store(ctl.aec.Load())
-		m.n.set.AEC = ctl.aec.Load()
-		m.n.set.save()
-		return m.note("echo cancel " + onOff(ctl.aec.Load())), nil
-	case "a":
-		ctl.agc.Store(!ctl.agc.Load())
-		m.n.set.AGC = ctl.agc.Load()
-		m.n.set.save()
-		return m.note("auto-gain " + onOff(ctl.agc.Load())), nil
-	case "l":
-		return m.note(m.n.toggleLock()), nil
 	case "i":
 		return m.nextDevice(malgo.Capture)
 	case "o":
@@ -533,64 +530,81 @@ const (
 // clickable. View joins the lines; mouse() reads the geometry — they can
 // never disagree because both come from here.
 func (m model) render() ([]string, geometry) {
-	ctl := m.n.ctl
-	var g geometry
-	var lines []string
-	add := func(s string) { lines = append(lines, s) }
-	// A line that wrapped would shift every row below it; only free-text
-	// lines can, so only they pay for the width measurement.
-	clip := lipgloss.NewStyle().MaxWidth(max(1, m.width))
-	addClipped := func(s string) {
-		if m.width > 0 {
-			s = clip.Render(s)
-		}
-		add(s)
-	}
+	s := &screen{model: m}
+	s.header()
+	s.tiles()
+	s.controls()
+	s.panels()
+	s.bottom()
+	return s.lines, s.g
+}
 
-	add("")
-	g.linkRow = len(lines)
-	addClipped("  " + linkSt.Render(m.n.link.String()) + dim.Render("   c to copy"))
-	if tag := m.n.update.Load(); tag != nil {
-		if m.asked {
-			addClipped("  " + dim.Render(*tag+" is out — yap update"))
+// screen accumulates the frame top to bottom.
+type screen struct {
+	model
+	lines []string
+	g     geometry
+}
+
+func (s *screen) add(line string) { s.lines = append(s.lines, line) }
+
+// clipped adds a free-text line cut to the terminal width: one that wrapped
+// would shift every row below it and break the click geometry.
+func (s *screen) clipped(line string) {
+	if s.width > 0 {
+		line = lipgloss.NewStyle().MaxWidth(s.width).Render(line)
+	}
+	s.add(line)
+}
+
+func (s *screen) header() {
+	s.add("")
+	s.g.linkRow = len(s.lines)
+	s.clipped("  " + linkSt.Render(s.n.link.String()) + dim.Render("   c to copy"))
+	if tag := s.n.update.Load(); tag != nil {
+		if s.asked {
+			s.clipped("  " + dim.Render(*tag+" is out — yap update"))
 		} else { // the dialog: y updates and restarts into the same room, n dismisses
 			lead := fmt.Sprintf("⬆ %s available (you run %s) — update now?   ", *tag, version)
 			yes, no := "[y] yes", "[n] later"
-			x, row := leftPad+len([]rune(lead)), len(lines)
-			g.ctl = append(g.ctl, seg{x, x + len(yes), "y", "", row}, seg{x + len(yes) + 3, x + len(yes) + 3 + len(no), "n", "", row})
-			addClipped("  " + yellow.Render(lead) + hotSt.Render(yes) + "   " + hotSt.Render(no))
+			x, row := leftPad+len([]rune(lead)), len(s.lines)
+			s.g.ctl = append(s.g.ctl, seg{x, x + len(yes), "y", "", row}, seg{x + len(yes) + 3, x + len(yes) + 3 + len(no), "n", "", row})
+			s.clipped("  " + yellow.Render(lead) + hotSt.Render(yes) + "   " + hotSt.Render(no))
 		}
 	}
-	peers := m.people()
-	addClipped("  " + m.statusBar(peers))
-	add("")
-	names := []string{m.n.name + " (you)"}
-	for _, p := range peers {
+	s.clipped("  " + s.statusBar())
+	s.add("")
+}
+
+// tiles is the grid of people (us first), then one line per relay.
+func (s *screen) tiles() {
+	people := s.n.people()
+	names := []string{s.n.name + " (you)"}
+	for _, p := range people {
 		names = append(names, p.name)
 	}
-	w := tileWidth(names, m.width)
-
-	tiles := []string{m.selfTile(w)}
-	for i, p := range peers {
-		tiles = append(tiles, m.peerTile(p, i, w))
+	w := tileWidth(names, s.width)
+	tiles := []string{s.selfTile(w)}
+	for i, p := range people {
+		tiles = append(tiles, s.peerTile(p, i, w))
 	}
+	g := &s.g
 	g.stride = max(1, lipgloss.Width(strings.SplitN(tiles[0], "\n", 2)[0]))
-	g.cols = max(1, (max(m.width, g.stride+leftPad)-leftPad)/g.stride)
-	g.tileH, g.tiles, g.tileTop = tileH, len(tiles), len(lines)
+	g.cols = max(1, (max(s.width, g.stride+leftPad)-leftPad)/g.stride)
+	g.tileH, g.tiles, g.tileTop = tileH, len(tiles), len(s.lines)
 	for i := 0; i < len(tiles); i += g.cols {
-		row := tiles[i:min(i+g.cols, len(tiles))]
-		block := lipgloss.NewStyle().PaddingLeft(leftPad).Render(lipgloss.JoinHorizontal(lipgloss.Top, row...))
-		for _, ln := range strings.Split(block, "\n") {
-			add(ln)
+		row := lipgloss.JoinHorizontal(lipgloss.Top, tiles[i:min(i+g.cols, len(tiles))]...)
+		s.lines = append(s.lines, strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(row), "\n")...)
+	}
+	if len(people) == 0 {
+		s.add("")
+		s.add("  " + dim.Render(spinner[s.frame%len(spinner)]+" waiting for friends — send them the link"))
+	}
+	for _, r := range s.n.peerList() { // relays are plumbing, not people: a line, no tile, no volume
+		if !r.relay {
+			continue
 		}
-	}
-	if len(peers) == 0 {
-		add("")
-		add("  " + dim.Render(spinner[m.frame%len(spinner)]+" waiting for friends — send them the link"))
-	}
-	// Relays are plumbing, not people: one line each, no tile, no volume.
-	for _, r := range m.relays() {
-		state := yellow.Render(spinner[m.frame%len(spinner)] + " connecting")
+		state := yellow.Render(spinner[s.frame%len(spinner)] + " connecting")
 		if r.connected() {
 			via := ""
 			if a := r.addr.Load(); a != nil {
@@ -598,63 +612,52 @@ func (m model) render() ([]string, geometry) {
 			}
 			state = dim.Render(via + rttText(r))
 		}
-		addClipped("  " + keySt.Render("⇄ "+r.name) + " " + dim.Render(verText(r)) + " " + state)
+		s.clipped("  " + keySt.Render("⇄ "+r.name) + " " + dim.Render(verText(r)) + " " + state)
 	}
-	add("")
+	s.add("")
+}
 
-	// Toggles and actions flow left to right and wrap on a narrow terminal;
-	// every span remembers its row, so the mouse finds it wherever it landed.
+// controls is the toggle row and the action row. Both flow left to right
+// and wrap on a narrow terminal; every span remembers its row, so the mouse
+// finds it wherever it landed.
+func (s *screen) controls() {
 	line, x := "", leftPad
 	flush := func() {
 		if line != "" {
-			add("  " + strings.TrimRight(line, " "))
+			s.add("  " + strings.TrimRight(line, " "))
 			line, x = "", leftPad
 		}
 	}
 	put := func(plain, shown, key, alt string, gap int) {
-		if line != "" && m.width > 0 && x+len([]rune(plain)) > m.width-1 {
+		if line != "" && s.width > 0 && x+len([]rune(plain)) > s.width-1 {
 			flush()
 		}
-		g.ctl = append(g.ctl, seg{x, x + len([]rune(plain)), key, alt, len(lines)})
+		s.g.ctl = append(s.g.ctl, seg{x, x + len([]rune(plain)), key, alt, len(s.lines)})
 		line += shown + strings.Repeat(" ", gap)
 		x += len([]rune(plain)) + gap
 	}
-	// Toggles: always visible with explicit ON/off, so a keypress visibly
-	// flips one; live shows what the switch is doing right now.
-	chip := func(key, name string, on, offRed bool, live string) {
+	for _, t := range s.toggles() { // explicit ON/off so a keypress visibly flips one; live says what it is doing
+		on := t.on()
 		sw, st := "○ off", dim
 		if on {
 			sw, st = "● on", green
-		} else if offRed {
+		} else if t.offRed {
 			st = red
 		}
-		plain, shown := name+" "+sw, hot(name, key)+" "+st.Render(sw)
-		if on && live != "" {
+		plain, shown := t.label+" "+sw, hot(t.label, t.key)+" "+st.Render(sw)
+		if on && t.live != nil {
+			live := t.live()
 			plain, shown = plain+" "+live, shown+" "+dim.Render(live)
 		}
-		put(plain, shown, key, "", 4)
+		put(plain, shown, t.key, "", 4)
 	}
-	gateLive := "shut"
-	if m.n.gateOpen.Load() {
-		gateLive = "open"
-	}
-	chip("m", "mic", !ctl.muted.Load(), true, "")
-	chip("d", "denoise", ctl.denoise.Load(), false, "")
-	chip("g", "gate", ctl.gate.Load(), false, gateLive)
-	chip("e", "echo", ctl.aec.Load(), false, fmt.Sprintf("−%.0f dB", max(0, math.Float64frombits(m.n.audio.aecDB.Load()))))
-	chip("a", "gain", ctl.agc.Load(), false, fmt.Sprintf("×%.1f", math.Float64frombits(m.n.agcGain.Load())))
-	chip("l", "lock", m.n.locked.Load(), false, "")
-	chip("p", "ptt", ctl.ptt.Load(), false, "")
 	flush()
-
-	// Actions: arrow/sign ones show their keys in front; letter ones light
-	// the letter inside the word, like the toggles above.
-	action := func(keys, word, key, alt string) {
-		plain, shown := word, hot(word, key)
+	action := func(keys, word, key, alt string) { // arrow/sign keys shown in front; letters lit inside the word
 		if keys != "" {
-			plain, shown = keys+" "+word, keySt.Render(keys)+" "+word
+			put(keys+" "+word, keySt.Render(keys)+" "+word, key, alt, 3)
+		} else {
+			put(word, hot(word, key), key, alt, 3)
 		}
-		put(plain, shown, key, alt, 3)
 	}
 	action("↑/↓", "pick", "down", "up")
 	action("←/→", "volume", "right", "left")
@@ -664,69 +667,68 @@ func (m model) render() ([]string, geometry) {
 	action("", "copy", "c", "")
 	action("", "quit", "q", "")
 	flush()
-	add("")
+	s.add("")
+}
 
-	// Device and tuning tiles change rarely, and bordered boxes are the most
-	// expensive thing to lay out, so their lines are cached and rebuilt only
-	// when something in them changes; the click geometry is kept relative
-	// to the block and shifted to wherever it lands this frame.
-	knobs := m.knobs()
+// panels are the device and tuning tiles. They change rarely and bordered
+// boxes are the most expensive thing to lay out, so their lines are cached
+// and rebuilt only when something in them changes; the click geometry is
+// kept relative to the block and shifted to wherever it lands this frame.
+func (s *screen) panels() {
+	knobs := s.knobs()
 	vals := make([]string, len(knobs))
 	for i, k := range knobs {
 		vals[i] = fmt.Sprint(k.get())
 	}
-	key := fmt.Sprintf("%d|%d|%s|%s|%s|%s|%d|%s", m.width, m.tune, strings.Join(m.inputs, "\x00"), strings.Join(m.outputs, "\x00"),
-		m.n.audio.mic, m.n.audio.out, len(knobs), strings.Join(vals, ","))
-	if c := m.cache; c.key != key {
-		c.build(m, knobs)
+	key := fmt.Sprintf("%d|%d|%s|%s|%s|%s|%s", s.width, s.tune, strings.Join(s.inputs, "\x00"), strings.Join(s.outputs, "\x00"),
+		s.n.audio.mic, s.n.audio.out, strings.Join(vals, ","))
+	c := s.cache
+	if c.key != key {
+		c.build(s.model, knobs)
 		c.key = key
 	}
-	top := len(lines)
-	for _, ln := range m.cache.lines {
-		add(ln)
-	}
-	g.dev, g.tune, g.arrows = m.cache.dev, m.cache.tune, m.cache.arrows
-	g.dev[0].top += top
-	g.dev[1].top += top
-	g.tune.top += top
+	top := len(s.lines)
+	s.lines = append(s.lines, c.lines...)
+	s.g.dev, s.g.tune, s.g.arrows = c.dev, c.tune, c.arrows
+	s.g.dev[0].top += top
+	s.g.dev[1].top += top
+	s.g.tune.top += top
+}
 
-	if m.notice != "" && m.frame-m.noticeAt < 60 {
-		addClipped("  " + yellow.Render("▸ "+m.notice))
+// bottom is the notice, then the log filling every row left, newest last,
+// with the file path as the last line.
+func (s *screen) bottom() {
+	if s.notice != "" && s.frame-s.noticeAt < 60 {
+		s.clipped("  " + yellow.Render("▸ "+s.notice))
 	} else {
-		add("")
+		s.add("")
 	}
-	// The log takes every row left below the controls, newest at the bottom,
-	// with the file path as the last line.
 	show := 3
-	if m.height > 0 {
-		show = max(0, m.height-len(lines)-1)
+	if s.height > 0 {
+		show = max(0, s.height-len(s.lines)-1)
 	}
-	logs := m.logs
-	if len(logs) > show {
-		logs = logs[len(logs)-show:]
-	}
-	for _, l := range logs {
-		if m.width > leftPad+8 {
-			l = trunc(l, m.width-leftPad)
+	for _, l := range s.logs[max(0, len(s.logs)-show):] {
+		if s.width > leftPad+8 {
+			l = trunc(l, s.width-leftPad)
 		}
-		add("  " + dim.Render(l))
+		s.add("  " + dim.Render(l))
 	}
-	add("  " + dim.Render("full log: "+m.logPath))
-	return lines, g
+	s.add("  " + dim.Render("full log: "+s.logPath))
 }
 
 // statusBar sums the call up in one line: what we send, what comes in, the
 // worst ping and jitter, a quality grade from recent drops, and the drop
 // counters themselves. Per-person detail stays on the tiles.
-func (m model) statusBar(peers []*peer) string {
+func (m model) statusBar() string {
 	var rx, bad float64
 	var rtt, jit int64
 	var lost, stall, skip, rebuf uint64
 	relayed := 0
+	peers := m.n.people()
 	for _, p := range peers {
-		if r := m.rates[p]; r != nil {
-			rx += r.kbps
-			bad = max(bad, r.bad)
+		if v := m.views[p]; v != nil {
+			rx += v.rate.kbps
+			bad = max(bad, v.rate.bad)
 		}
 		rtt = max(rtt, p.rttUS.Load())
 		jit = max(jit, p.jitUS.Load())
@@ -767,8 +769,10 @@ func (m model) selfTile(w int) string {
 	case ctl.ptt.Load():
 		head = dim.Render("○ hold space")
 	}
-	return tile(tileMeSt, w, m.n.name+" (you)", head,
-		m.mic, talkText(m.n.talkMS.Load()), dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load())))
+	talk, foot := talkText(m.n.talkMS.Load()), dim.Render(fmt.Sprintf("tx %d kbps", ctl.bitrate.Load()))
+	lit, hold := m.mic.cells(barWidth(w))
+	key := fmt.Sprint(w, head, lit, hold, m.mic.band(), talk, foot)
+	return m.cache.self.get(key, func() string { return tile(tileMeSt, w, m.n.name+" (you)", head, m.mic, talk, foot) })
 }
 
 func (m model) peerTile(p *peer, i, w int) string {
@@ -793,30 +797,33 @@ func (m model) peerTile(p *peer, i, w int) string {
 			status = red.Render("⚠ can't hear you") + " " + status
 		}
 	}
-	var mt meter
-	if x := m.meters[p]; x != nil {
-		mt = *x
+	v := m.views[p]
+	if v == nil {
+		v = &view{} // first frame: rendered uncached
 	}
 	// Volume as a slider: ten cells for 0–100 %, the number says the rest.
-	v := int(p.volume.Load())
-	lit := min(10, (v+5)/10)
+	pct := int(p.volume.Load())
+	lit := min(10, (pct+5)/10)
 	bar := green.Render(strings.Repeat("▮", lit)) + dim.Render(strings.Repeat("▯", 10-lit))
-	vol := fmt.Sprintf("%s %3d%%", bar, v)
+	vol := fmt.Sprintf("%s %3d%%", bar, pct)
 	if i == m.cursor {
 		vol = selSt.Render("◂ ") + vol + selSt.Render(" ▸")
 	} else {
 		vol = "  " + vol + "  "
 	}
-	if r := m.rates[p]; r != nil && r.kbps > 0 {
-		vol += dim.Render(fmt.Sprintf("  %.0f kbps", r.kbps))
+	if v.rate.kbps > 0 {
+		vol += dim.Render(fmt.Sprintf("  %.0f kbps", v.rate.kbps))
 	}
-	return tile(st, w, p.name, dim.Render(verText(p))+" "+status, mt, talkText(p.talkMS.Load()), vol)
+	head, talk := dim.Render(verText(p))+" "+status, talkText(p.talkMS.Load())
+	lit, hold := v.meter.cells(barWidth(w))
+	key := fmt.Sprint(w, i == m.cursor, p.name, head, lit, hold, v.meter.band(), talk, vol)
+	return v.tile.get(key, func() string { return tile(st, w, p.name, head, v.meter, talk, vol) })
 }
 
 // mouse maps clicks and wheel onto actions using the exact drawn geometry.
 func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	wheel := e.Button == tea.MouseButtonWheelUp || e.Button == tea.MouseButtonWheelDown
-	up := e.Button == tea.MouseButtonWheelUp
+	dir := map[bool]int{true: +1, false: -1}[e.Button == tea.MouseButtonWheelUp]
 	if !wheel && e.Action != tea.MouseActionPress {
 		return m, nil // releases and drags: nothing to hit-test, no render
 	}
@@ -846,10 +853,10 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if i, ok := g.tileAt(e.X, e.Y); ok {
 		switch {
 		case wheel && i == 0:
-			return m.step("bitrate", up)
+			return m.nudgeBitrate(dir)
 		case wheel:
 			m.cursor = i - 1
-			return m.step("volume", up)
+			return m.nudgeVolume(dir)
 		case i == 0:
 			return m.act("m")
 		default:
@@ -914,7 +921,7 @@ const (
 // right, and a footer line — inside a border that reacts to the voice.
 func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot string) string {
 	nameSt := bold
-	if mt.level >= speakLvl {
+	if mt.band() > 0 {
 		nameSt = green.Bold(true) // the one talking stands out by name too
 	}
 	head := nameSt.Render(trunc(name, w-4))
@@ -924,16 +931,20 @@ func tile(st lipgloss.Style, w int, name, status string, mt meter, talk, foot st
 	talk = fmt.Sprintf("%8s", talk)
 	// While they speak the frame itself turns into dots that grow with the
 	// level (· ∙ •); silence brings the plain rounded border back.
-	switch {
-	case mt.level >= peakLvl:
+	switch mt.band() {
+	case 3:
 		st = st.Border(dotBorder("•")).BorderForeground(lipgloss.Color("46"))
-	case mt.level >= loudLvl:
+	case 2:
 		st = st.Border(dotBorder("∙")).BorderForeground(lipgloss.Color("42"))
-	case mt.level >= speakLvl:
+	case 1:
 		st = st.Border(dotBorder("·")).BorderForeground(lipgloss.Color("35"))
 	}
-	return st.Width(w).Render(fmt.Sprintf("%s\n%s %s\n%s", head, mt.bar(w-6-len(talk)-1), dim.Render(talk), foot))
+	return st.Width(w).Render(fmt.Sprintf("%s\n%s %s\n%s", head, mt.bar(barWidth(w)), dim.Render(talk), foot))
 }
+
+// barWidth is the VU bar's cells in a w-wide tile: borders, padding, the
+// 8-char talk time and a space are taken off.
+func barWidth(w int) int { return w - 6 - 8 - 1 }
 
 // dotBorder is a border drawn entirely with one character.
 func dotBorder(ch string) lipgloss.Border {
@@ -944,6 +955,7 @@ func dotBorder(ch string) lipgloss.Border {
 // panelCache holds the rendered device and tuning tiles between frames.
 // It is a pointer shared by every copy of the model, so a rebuild sticks.
 type panelCache struct {
+	self   tileCache // our own tile, cached the same way as the others'
 	key    string
 	lines  []string
 	dev    [2]devBox // tops relative to the first cached line

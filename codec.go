@@ -7,8 +7,7 @@ import (
 const (
 	sampleRate = 48000
 	frameSize  = 960 // 20 ms @ 48 kHz
-	bitrate    = 96000
-	playTarget = 3 // frames the playback queue holds: cushion against decode-goroutine scheduling jitter
+	playTarget = 3   // frames the playback queue holds: cushion against decode-goroutine scheduling jitter
 )
 
 type encoder struct {
@@ -21,8 +20,7 @@ func newEncoder() *encoder {
 	if err != nil {
 		panic(err)
 	}
-	must(enc.SetBitrate(bitrate))
-	must(enc.SetComplexity(10))
+	must(enc.SetComplexity(10)) // bitrate is set by the sender from the live setting
 	must(enc.SetInBandFEC(true))
 	must(enc.SetPacketLossPerc(5))
 	must(enc.SetDTX(false))

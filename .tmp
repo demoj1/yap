@@ -1,0 +1,10 @@
+{
+  "denoise": true,
+  "gate": false,
+  "aec": false,
+  "agc": false,
+  "ptt": false,
+  "aec_tail": 300,
+  "aec_suppress": -60,
+  "aec_suppress_active": -30
+}
