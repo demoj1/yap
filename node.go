@@ -51,6 +51,7 @@ type node struct {
 	update  atomic.Pointer[string]          // "update available ..." once the check found a newer release
 	roster  atomic.Pointer[[]*peer]         // cached sorted snapshot for the per-frame hot paths
 	lastSay atomic.Int64                    // unix nanos of the last announce; throttles vs ntfy 429
+	relay   bool                            // relay/daemon mode: no audio, just forward for everyone
 	locked  atomic.Bool                     // room lock: no new participants admitted
 	allowed atomic.Pointer[map[string]bool] // names admitted at lock time; nil when unlocked
 }
@@ -71,6 +72,18 @@ func (n *node) run() {
 	go n.reaper()
 	go n.statsLoop()
 	go n.pingLoop()
+	n.rendezvous()
+}
+
+// runRelay is the daemon mode: no microphone, no playback, no TUI. It just
+// keeps an open port, punches to everyone so it becomes a direct peer of all,
+// and forwards packets between participants who cannot reach each other. On a
+// public, always-on host it is a stable relay hub and rendezvous anchor.
+func (n *node) runRelay() {
+	n.relay = true
+	go n.recvLoop()
+	go n.reaper()
+	go n.statsLoop()
 	n.rendezvous()
 }
 
@@ -382,6 +395,10 @@ func (n *node) deliver(p *peer, from *net.UDPAddr, plain []byte) {
 	}
 	switch plain[0] {
 	case typAudio:
+		if n.relay {
+			p.accept(from, 0, nil) // relay keeps the peer alive but never buffers audio
+			return
+		}
 		if frame, opus, ok := parseAudio(plain); ok {
 			p.accept(from, frame, opus)
 		}

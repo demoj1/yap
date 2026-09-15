@@ -11,29 +11,39 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-const ntfy = "https://ntfy.sh/"
+// rendezvousHosts are ntfy-compatible servers used only to swap encrypted
+// hellos. We publish to and subscribe from ALL of them at once, so two
+// participants meet as long as any single host is reachable by both — one
+// host rate-limiting us (429) or going down no longer breaks the call. The
+// payload is AEAD-encrypted, so plain http mirrors are fine. Add your own
+// (e.g. a self-hosted ntfy) via -rendezvous.
+var rendezvousHosts = []string{
+	"https://ntfy.sh",
+	"https://ntfy.envs.net",
+	"https://ntfy.adminforge.de",
+}
 
-// hello is what every participant publishes to the room: who they are for
-// this run (ID + Nonce), their name, and every address they might be
-// reachable at (LAN + STUN-mapped public). Everyone is symmetric: seeing a
-// hello from an unknown ID means "punch to them".
+// hello is what every participant publishes to the room.
 type hello struct {
-	Proto int      `json:"proto"` // wire format version; see proto
+	Proto int      `json:"proto"`
 	ID    []byte   `json:"id"`
 	Name  string   `json:"name"`
 	Nonce []byte   `json:"nonce"`
 	Addrs []string `json:"addrs"`
-	Reach [][]byte `json:"reach,omitempty"` // IDs we talk to directly; lets others pick us as a relay
+	Reach [][]byte `json:"reach,omitempty"`
 }
 
-// room is a public ntfy.sh topic used only to swap encrypted hellos.
+// room fans hellos out across every rendezvous host.
 type room struct {
 	topic string
 	aead  cipher.AEAD
+	hosts []string
 }
 
 func newRoom(l link) *room {
@@ -42,9 +52,11 @@ func newRoom(l link) *room {
 	if err != nil {
 		panic(err)
 	}
-	return &room{topic: l.topic(), aead: aead}
+	return &room{topic: l.topic(), aead: aead, hosts: rendezvousHosts}
 }
 
+// say posts one hello to every host concurrently. It returns an error only
+// if every host failed, so a 429 or outage on some hosts is not fatal.
 func (r *room) say(h hello) error {
 	plain, err := json.Marshal(h)
 	if err != nil {
@@ -55,55 +67,106 @@ func (r *room) say(h hello) error {
 		panic(err)
 	}
 	body := base64.StdEncoding.EncodeToString(r.aead.Seal(nonce, nonce, plain, nil))
-	resp, err := http.Post(ntfy+r.topic, "text/plain", strings.NewReader(body))
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var ok bool
+	lastErr := fmt.Errorf("no rendezvous hosts")
+	for _, host := range r.hosts {
+		wg.Add(1)
+		go func(host string) {
+			defer wg.Done()
+			err := postTo(host+"/"+r.topic, body)
+			mu.Lock()
+			if err == nil {
+				ok = true
+			} else {
+				lastErr = err
+			}
+			mu.Unlock()
+		}(host)
+	}
+	wg.Wait()
+	if ok {
+		return nil
+	}
+	return lastErr
+}
+
+func postTo(url, body string) error {
+	c := &http.Client{Timeout: 8 * time.Second}
+	resp, err := c.Post(url, "text/plain", strings.NewReader(body))
 	if err != nil {
 		return err
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("ntfy: %s", resp.Status)
+		return fmt.Errorf("%s: %s", url, resp.Status)
 	}
 	return nil
 }
 
-// listen streams every hello in the room, including our own. It returns
-// once the subscription is open, so a say() after it cannot be missed.
+// listen subscribes to every host and merges their hellos onto one channel.
+// Each host resubscribes on its own when its stream drops, so the room keeps
+// working while individual hosts come and go. Duplicate hellos are harmless:
+// onHello is idempotent per (id, nonce).
 func (r *room) listen(ctx context.Context) (<-chan hello, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", ntfy+r.topic+"/json", nil)
-	if err != nil {
-		panic(err)
+	out := make(chan hello)
+	for _, host := range r.hosts {
+		go r.subscribe(ctx, host, out)
 	}
+	return out, nil
+}
+
+func (r *room) subscribe(ctx context.Context, host string, out chan<- hello) {
+	url := host + "/" + r.topic + "/json"
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		wait := r.stream(ctx, url, out)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
+// stream holds one subscription open, feeding hellos to out, and returns how
+// long to wait before reconnecting (longer after a 429 or error).
+func (r *room) stream(ctx context.Context, url string, out chan<- hello) time.Duration {
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return 8 * time.Second
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 429 {
+		return 90 * time.Second
+	}
+	if resp.StatusCode != 200 {
+		return 15 * time.Second
 	}
 	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	var ev struct {
 		Event   string `json:"event"`
 		Message string `json:"message"`
 	}
 	for sc.Scan() {
-		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Event == "open" {
-			break
+		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Event != "message" {
+			continue
 		}
-	}
-	if sc.Err() != nil {
-		return nil, sc.Err()
-	}
-	out := make(chan hello)
-	go func() {
-		defer resp.Body.Close()
-		defer close(out)
-		for sc.Scan() {
-			if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Event != "message" {
-				continue
-			}
-			if h, ok := r.open(ev.Message); ok {
-				out <- h
+		if h, ok := r.open(ev.Message); ok {
+			select {
+			case out <- h:
+			case <-ctx.Done():
+				return 0
 			}
 		}
-	}()
-	return out, nil
+	}
+	return 3 * time.Second // clean EOF: reconnect soon
 }
 
 func (r *room) open(msg string) (hello, bool) {

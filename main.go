@@ -19,6 +19,7 @@ func usage() {
 
   yap listen [-p 4444] [-new]     print a link, wait for a friend (link is kept across restarts)
   yap join <link>                 call the friend
+  yap relay [-p 4444] <link>      run as a headless relay hub (public, always-on box)
   yap devices                     list microphones and speakers
   yap reset                       forget saved devices/volumes, back to defaults
   yap update                      replace this binary with the latest release
@@ -76,6 +77,7 @@ func main() {
 	ctl.agc.Store(set.AGC && !*noagc)
 
 	var l link
+	relay := false
 	switch os.Args[1] {
 	case "listen":
 		if fs.NArg() != 0 {
@@ -91,6 +93,15 @@ func main() {
 			log.Fatal(err)
 		}
 		*port = 0
+	case "relay":
+		if fs.NArg() != 1 {
+			usage()
+		}
+		var err error
+		if l, err = parseLink(fs.Arg(0)); err != nil {
+			log.Fatal(err)
+		}
+		relay = true
 	default:
 		usage()
 	}
@@ -116,6 +127,13 @@ func main() {
 	}
 	n.conn = conn
 	log.Println("link", n.link)
+
+	if relay { // daemon: no audio, no TUI, just forward for everyone
+		log.Printf("relay on udp %d — forwarding for anyone on this link", *port)
+		n.runRelay()
+		return
+	}
+
 	if *mic != set.Mic || *out != set.Out {
 		set.Mic, set.Out = *mic, *out
 		set.save()
