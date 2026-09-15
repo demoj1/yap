@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,8 +19,8 @@ import (
 
 const (
 	punchTimeout  = 20 * time.Second
-	announceEvery = 20 * time.Second // re-announce so latecomers find us and NAT mappings stay warm
-	retryPause    = 3 * time.Second
+	announceEvery = 45 * time.Second // re-announce so latecomers find us and NAT mappings stay warm
+	retryPause    = 8 * time.Second
 	statsEvery    = 5 * time.Second
 )
 
@@ -47,11 +48,11 @@ type node struct {
 	stunCh  chan []byte // STUN replies, routed out of recvLoop
 	pub     atomic.Pointer[net.UDPAddr]
 	room    *room
-	update  atomic.Pointer[string]  // "update available ..." once the check found a newer release
-	roster  atomic.Pointer[[]*peer] // cached sorted snapshot for the per-frame hot paths
-	lastSay atomic.Int64            // unix nanos of the last announce; throttles vs ntfy 429
-	locked  atomic.Bool             // room lock: no new participants admitted
-	allowed map[string]bool         // IDs admitted at lock time (string(id)); nil when unlocked
+	update  atomic.Pointer[string]          // "update available ..." once the check found a newer release
+	roster  atomic.Pointer[[]*peer]         // cached sorted snapshot for the per-frame hot paths
+	lastSay atomic.Int64                    // unix nanos of the last announce; throttles vs ntfy 429
+	locked  atomic.Bool                     // room lock: no new participants admitted
+	allowed atomic.Pointer[map[string]bool] // names admitted at lock time; nil when unlocked
 }
 
 func newNode(l link, name string, ctl *controls, set *settings) *node {
@@ -93,7 +94,12 @@ func (n *node) rendezvous() {
 		if err != nil {
 			cancel()
 			log.Println("rendezvous:", err)
-			time.Sleep(retryPause)
+			pause := retryPause
+			if strings.Contains(err.Error(), "429") {
+				pause = backoff429
+				log.Println("ntfy rate-limited the subscription — backing off", pause)
+			}
+			time.Sleep(pause)
 			continue
 		}
 		n.announce()
@@ -119,7 +125,10 @@ func (n *node) rendezvous() {
 	}
 }
 
-const minAnnounceGap = 4 * time.Second // ntfy free tier rate-limits; don't hammer it
+const (
+	minAnnounceGap = 10 * time.Second // ntfy free tier rate-limits; don't hammer it
+	backoff429     = 90 * time.Second // when ntfy says 429, wait this long before the next POST
+)
 
 func (n *node) announce() {
 	last := n.lastSay.Load()
@@ -144,7 +153,12 @@ func (n *node) announce() {
 	}
 	if err := n.room.say(h); err != nil {
 		log.Println("rendezvous:", err)
-		n.lastSay.Store(time.Now().Add(20 * time.Second).UnixNano()) // ntfy pushed back: wait longer
+		wait := 20 * time.Second
+		if strings.Contains(err.Error(), "429") {
+			wait = backoff429
+			log.Println("ntfy rate-limited us — backing off", wait)
+		}
+		n.lastSay.Store(time.Now().Add(wait - minAnnounceGap).UnixNano())
 	}
 }
 
@@ -162,11 +176,12 @@ func (n *node) onHello(h hello) bool {
 		log.Printf("%s runs an incompatible yap (proto %d, need %d) — ask them to update", who, h.Proto, proto)
 		return false
 	}
-	n.mu.Lock()
-	if n.locked.Load() && !n.allowed[h.Name] {
-		n.mu.Unlock()
-		return false // room is locked to newcomers (matched by name, so a reconnect is let back in)
+	if n.locked.Load() {
+		if a := n.allowed.Load(); a == nil || !(*a)[h.Name] {
+			return false // room is locked to newcomers (matched by name, so a reconnect is let back in)
+		}
 	}
+	n.mu.Lock()
 	old, known := n.peers[string(h.ID)]
 	if known && string(old.nonce) == string(h.Nonce) {
 		n.mu.Unlock()
@@ -533,24 +548,18 @@ func (n *node) peerList() []*peer {
 func (n *node) toggleLock() string {
 	if n.locked.Load() {
 		n.locked.Store(false)
-		n.mu.Lock()
-		n.allowed = nil
-		n.mu.Unlock()
+		n.allowed.Store(nil)
 		log.Println("room unlocked")
 		return "room unlocked — anyone with the link can join"
 	}
-	n.mu.Lock()
 	allowed := map[string]bool{n.name: true}
-	for _, p := range n.peers {
+	for _, p := range n.peerList() {
 		allowed[p.name] = true
 	}
-	n.mu.Unlock()
 	if len(allowed) < 2 {
 		return "nobody here yet — lock once your people have joined"
 	}
-	n.mu.Lock()
-	n.allowed = allowed
-	n.mu.Unlock()
+	n.allowed.Store(&allowed)
 	n.locked.Store(true)
 	log.Printf("room locked with %d participant(s)", len(allowed))
 	return fmt.Sprintf("room LOCKED — %d here, no one new gets in", len(allowed))
