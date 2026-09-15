@@ -21,7 +21,6 @@ import (
 const (
 	punchTimeout  = 20 * time.Second
 	announceEvery = 45 * time.Second // re-announce so latecomers find us and NAT mappings stay warm
-	retryPause    = 8 * time.Second
 	statsEvery    = 5 * time.Second
 )
 
@@ -154,42 +153,22 @@ func (n *node) pingLoop() {
 	}
 }
 
+// rendezvous announces us to the room and adds a peer for every hello it
+// hears, for the life of the process; the room resubscribes on its own.
 func (n *node) rendezvous() {
 	n.room = newRoom(n.link)
+	hellos := n.room.listen(context.Background())
+	n.announce()
+	tick := time.NewTicker(announceEvery)
 	for {
-		ctx, cancel := context.WithCancel(context.Background())
-		hellos, err := n.room.listen(ctx)
-		if err != nil {
-			cancel()
-			log.Println("rendezvous:", err)
-			pause := retryPause
-			if strings.Contains(err.Error(), "429") {
-				pause = backoff429
-				log.Println("ntfy rate-limited the subscription — backing off", pause)
+		select {
+		case h := <-hellos:
+			if n.onHello(h) {
+				n.announce() // a newcomer can't know us yet: answer right away
 			}
-			time.Sleep(pause)
-			continue
+		case <-tick.C:
+			n.announce()
 		}
-		n.announce()
-		tick := time.NewTicker(announceEvery)
-	stream:
-		for {
-			select {
-			case h, ok := <-hellos:
-				if !ok {
-					break stream // ntfy dropped the stream; resubscribe
-				}
-				if n.onHello(h) {
-					n.announce() // a newcomer can't know us yet: answer right away
-				}
-			case <-tick.C:
-				n.announce()
-			}
-		}
-		tick.Stop()
-		cancel()
-		log.Println("rendezvous stream ended, reconnecting")
-		time.Sleep(retryPause)
 	}
 }
 

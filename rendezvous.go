@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -72,29 +71,17 @@ func (r *room) say(h hello) error {
 	}
 	body := base64.StdEncoding.EncodeToString(r.aead.Seal(nonce, nonce, plain, nil))
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var ok bool
-	lastErr := fmt.Errorf("no rendezvous hosts")
+	errs := make(chan error, len(r.hosts))
 	for _, host := range r.hosts {
-		wg.Add(1)
-		go func(host string) {
-			defer wg.Done()
-			err := postTo(host+"/"+r.topic, body)
-			mu.Lock()
-			if err == nil {
-				ok = true
-			} else {
-				lastErr = err
-			}
-			mu.Unlock()
-		}(host)
+		go func() { errs <- postTo(host+"/"+r.topic, body) }()
 	}
-	wg.Wait()
-	if ok {
-		return nil
+	err = fmt.Errorf("no rendezvous hosts")
+	for range r.hosts {
+		if err = <-errs; err == nil {
+			return nil
+		}
 	}
-	return lastErr
+	return err
 }
 
 func postTo(url, body string) error {
@@ -114,12 +101,12 @@ func postTo(url, body string) error {
 // Each host resubscribes on its own when its stream drops, so the room keeps
 // working while individual hosts come and go. Duplicate hellos are harmless:
 // onHello is idempotent per (id, nonce).
-func (r *room) listen(ctx context.Context) (<-chan hello, error) {
+func (r *room) listen(ctx context.Context) <-chan hello {
 	out := make(chan hello)
 	for _, host := range r.hosts {
 		go r.subscribe(ctx, host, out)
 	}
-	return out, nil
+	return out
 }
 
 func (r *room) subscribe(ctx context.Context, host string, out chan<- hello) {

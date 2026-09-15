@@ -30,24 +30,17 @@ func (a *agc) process(pcm []int16) {
 	}
 	rms := math.Sqrt(sum / float64(len(pcm)))
 	if rms >= agcFloorRMS {
-		want := agcTargetRMS / rms
-		want = math.Max(agcMinGain, math.Min(agcMaxGain, want))
+		want := max(agcMinGain, min(agcMaxGain, agcTargetRMS/rms))
+		rate := agcAttack
 		if want < a.gain {
-			a.gain += (want - a.gain) * agcRelease
-		} else {
-			a.gain += (want - a.gain) * agcAttack
+			rate = agcRelease
 		}
+		a.gain += (want - a.gain) * rate
 	}
 	if a.gain == 1 {
 		return
 	}
 	for i, x := range pcm {
-		v := int32(float64(x) * a.gain)
-		if v > 32767 {
-			v = 32767
-		} else if v < -32768 {
-			v = -32768
-		}
-		pcm[i] = int16(v)
+		pcm[i] = int16(max(-32768, min(32767, int32(float64(x)*a.gain))))
 	}
 }

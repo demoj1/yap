@@ -25,11 +25,10 @@ func (g *gate) pass(pcm []int16) bool {
 			peak = -v
 		}
 	}
-	if peak >= gateOpenPeak {
+	switch {
+	case peak >= gateOpenPeak:
 		g.open = gateHold
-	} else if g.open > 0 && peak >= gateClosePeak {
-		// still some sound: hold steady rather than count down
-	} else if g.open > 0 {
+	case g.open > 0 && peak < gateClosePeak: // sound in between holds steady rather than counting down
 		g.open--
 	}
 	return g.open > 0
