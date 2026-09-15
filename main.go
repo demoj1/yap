@@ -21,6 +21,7 @@ func usage() {
   yap join <link>                 call the friend
   yap devices                     list microphones and speakers
   yap reset                       forget saved devices/volumes, back to defaults
+  yap update                      replace this binary with the latest release
 
   common flags: -name <shown to the friend>  -mic <name>  -out <name>
                 -plain (logs instead of the TUI)  -nodenoise
@@ -35,6 +36,12 @@ func main() {
 	}
 	if os.Args[1] == "devices" {
 		printDevices()
+		return
+	}
+	if os.Args[1] == "update" {
+		if err := selfUpdate(); err != nil {
+			log.Fatal("update: ", err)
+		}
 		return
 	}
 	if os.Args[1] == "reset" {
@@ -109,6 +116,12 @@ func main() {
 	}
 	defer n.audio.Close()
 	log.Println("audio:", n.audio.describe())
+	go func() { // never blocks startup; the TUI shows it and the log keeps it
+		if hint := checkUpdate(); hint != "" {
+			n.update.Store(&hint)
+			log.Println(hint)
+		}
+	}()
 	log.Printf("buffers: jitter %d–%d frames (%d–%d ms) · playback %d frames · peer timeout %s",
 		minPrebuf, maxPrebuf, minPrebuf*20, maxPrebuf*20, playTarget, peerTimeout)
 

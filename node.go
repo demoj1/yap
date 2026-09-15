@@ -46,6 +46,7 @@ type node struct {
 	stunCh chan []byte // STUN replies, routed out of recvLoop
 	pub    atomic.Pointer[net.UDPAddr]
 	room   *room
+	update atomic.Pointer[string] // "update available ..." once the check found a newer release
 }
 
 func newNode(l link, name string, ctl *controls, set *settings) *node {

@@ -41,7 +41,9 @@ Each tagged release has prebuilt binaries: `yap-macos` (universal),
 Windows), run it in a terminal — Windows Terminal or PowerShell is fine, no
 extra window needed. On macOS a browser download is quarantined — fetch it
 with `curl -L` or clear it with `xattr -d com.apple.quarantine yap-macos`.
-Everyone in a call must run the same version.
+Everyone in a call must run the same version — `yap update` fetches the
+latest release for your OS and replaces the binary in place, and every start
+checks GitHub and shows a yellow line when a newer one exists.
 
 ## Build
 

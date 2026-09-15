@@ -270,9 +270,12 @@ func (m model) layout() layout {
 	}
 	w := tileWidth(names, m.width)
 	lay := layout{w: w, tiles: len(names), tileY: tileY}
+	if m.n.update.Load() != nil {
+		lay.tileY++ // the update line sits under the link
+	}
 	lay.cols = max(1, (max(m.width, w+4)-2)/(w+2))
 	rows := (lay.tiles + lay.cols - 1) / lay.cols
-	y := tileY + rows*tileH
+	y := lay.tileY + rows*tileH
 	if len(peers) == 0 {
 		y += 2
 	}
@@ -353,7 +356,11 @@ func trunc(s string, n int) string {
 func (m model) View() string {
 	ctl := m.n.ctl
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n  %s\n\n", linkSt.Render(m.n.link.String()))
+	fmt.Fprintf(&b, "\n  %s\n", linkSt.Render(m.n.link.String()))
+	if u := m.n.update.Load(); u != nil {
+		fmt.Fprintf(&b, "  %s\n", yellow.Render(*u))
+	}
+	b.WriteString("\n")
 
 	mic := dim.Render("mic")
 	if ctl.muted.Load() {
