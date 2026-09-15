@@ -248,6 +248,9 @@ func (n *node) onHello(h hello) bool {
 			return false // room is locked to newcomers (matched by name, so a reconnect is let back in)
 		}
 	}
+	if h.Name == n.name { // our own previous run, replayed from the rendezvous cache
+		return false
+	}
 	n.mu.Lock()
 	old, known := n.peers[string(h.ID)]
 	if known && string(old.nonce) == string(h.Nonce) {
@@ -260,6 +263,15 @@ func (n *node) onHello(h hello) bool {
 	}
 	if known { // same person, new run: drop the stale pair key
 		n.dropLocked(old)
+	}
+	// A new run under a known name: IDs are per run, so the name is how we
+	// tell that this is the same person restarted. The cache replays in
+	// time order and the living re-announce, so the latest hello wins.
+	for _, q := range n.peers {
+		if q.name == h.Name {
+			log.Println(h.Name, "restarted")
+			n.dropLocked(q)
+		}
 	}
 	p := newPeer(n.link, n.id, n.nonce, h)
 	p.volume.Store(int32(n.set.volume(p.name)))
