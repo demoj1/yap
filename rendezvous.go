@@ -191,19 +191,37 @@ func candidates(conn *net.UDPConn, pub *net.UDPAddr) []string {
 	port := conn.LocalAddr().(*net.UDPAddr).Port
 	var out []string
 	ifaces, _ := net.Interfaces()
+	seen := map[string]bool{}
+	add := func(a string) {
+		if a != "" && !seen[a] {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
 	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || isContainerBridge(ifc.Name) {
 			continue
 		}
 		addrs, _ := ifc.Addrs()
 		for _, a := range addrs {
 			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
-				out = append(out, (&net.UDPAddr{IP: ipn.IP, Port: port}).String())
+				add((&net.UDPAddr{IP: ipn.IP, Port: port}).String())
 			}
 		}
 	}
 	if pub != nil {
-		out = append(out, pub.String())
+		add(pub.String())
 	}
 	return out
+}
+
+// isContainerBridge skips docker/podman/virtual bridge interfaces whose
+// addresses are useless to announce (e.g. podman0 10.88.0.1).
+func isContainerBridge(name string) bool {
+	for _, p := range []string{"docker", "podman", "cni-", "veth", "br-"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }

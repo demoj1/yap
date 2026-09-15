@@ -85,6 +85,9 @@ func (n *node) runRelay() {
 	go n.recvLoop()
 	go n.reaper()
 	go n.statsLoop()
+	go n.pingLoop() // keepalives on each peer's learned source addr: completes
+	// the reverse path to symmetric-NAT clients (they reach our open port, but
+	// we never reply otherwise) and holds the hole open.
 	n.rendezvous()
 }
 
