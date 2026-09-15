@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"sort"
 	"strings"
@@ -159,7 +160,7 @@ func (n *node) announce() {
 	} else if prev == nil {
 		log.Println("stun:", err, "— only LAN addresses will be announced")
 	}
-	h := hello{Proto: proto, ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load())}
+	h := hello{Proto: proto, ID: n.id, Name: n.name, Nonce: n.nonce, Addrs: candidates(n.conn, n.pub.Load()), Relay: n.relay}
 	for _, p := range n.peerList() {
 		if p.direct() {
 			h.Reach = append(h.Reach, p.id)
@@ -193,7 +194,7 @@ func (n *node) onHello(h hello) bool {
 		log.Printf("%s runs an incompatible yap (proto %d, need %d) — ask them to update", who, h.Proto, proto)
 		return false
 	}
-	if n.locked.Load() {
+	if n.locked.Load() && !h.Relay { // relays only forward; a lock is about people
 		if a := n.allowed.Load(); a == nil || !(*a)[h.Name] {
 			return false // room is locked to newcomers (matched by name, so a reconnect is let back in)
 		}
@@ -203,8 +204,8 @@ func (n *node) onHello(h hello) bool {
 	if known && string(old.nonce) == string(h.Nonce) {
 		n.mu.Unlock()
 		old.reach.Store(&h.Reach)
-		if !old.direct() && old.via.Load() == nil {
-			go n.punch(old, h.Addrs) // still trying; their fresh candidates may help
+		if !old.direct() {
+			go n.punch(old, h.Addrs) // relayed or not: keep trying for a direct path with their fresh candidates
 		}
 		return false
 	}
@@ -225,16 +226,30 @@ func (n *node) onHello(h hello) bool {
 	return true
 }
 
-// relayFor picks a directly connected peer that says it reaches p, so audio
-// for p can go through it. The link owner with an open port is the usual
-// candidate: everyone reaches it.
+// relayFor picks a directly connected peer to carry audio for p: a dedicated
+// relay (its port is open, so everyone reaches it — no need to wait for its
+// hello to list p), or a person who says they reach p. Dedicated relays win
+// over people, and among equals the lowest round trip; an unmeasured one
+// ranks last.
 func (n *node) relayFor(p *peer) *peer {
+	var best *peer
+	var bestRank int64
 	for _, r := range n.peerList() {
-		if r != p && r.direct() && r.reaches(p.id) {
-			return r
+		if r == p || !r.direct() || !(r.relay || r.reaches(p.id)) {
+			continue
+		}
+		rank := r.rttUS.Load()
+		if rank == 0 {
+			rank = math.MaxInt32
+		}
+		if !r.relay {
+			rank += math.MaxInt32
+		}
+		if best == nil || rank < bestRank {
+			best, bestRank = r, rank
 		}
 	}
-	return nil
+	return best
 }
 
 // punch pings every candidate address of the peer until one of its packets
@@ -250,24 +265,46 @@ func (n *node) punch(p *peer, cands []string) {
 			addrs = append(addrs, a)
 		}
 	}
+	// Fastest path first: if a relay is already at hand, audio goes through
+	// it right now, and the direct punch below runs in the background —
+	// sendTo switches to the direct address the moment it appears.
+	fresh := !p.connected()
+	if p.via.Load() == nil {
+		if r := n.relayFor(p); r != nil {
+			p.via.Store(r)
+			log.Println("reaching", p.name, "via", r.name, "— trying a direct path in the background")
+		}
+	}
 	deadline := time.After(punchTimeout)
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
+	ready := p.ready // fires once; nil afterwards so the loop keeps punching
 	for {
 		for _, a := range addrs {
 			n.conn.WriteToUDP(p.seal(nil), a)
 		}
 		select {
-		case <-p.ready:
+		case <-ready:
+			ready = nil
 			if p.direct() {
 				log.Println("connected:", p.name, p.addr.Load())
-			} else if via := p.via.Load(); via != nil {
+				if p.relay {
+					n.adoptRelay(p)
+				}
+				return
+			}
+			if via := p.via.Load(); via != nil && fresh {
 				log.Println("connected:", p.name, "via", via.name)
 			}
-			return
 		case <-p.gone:
 			return
 		case <-deadline:
+			if via := p.via.Load(); via != nil {
+				if fresh {
+					log.Println("no direct path to", p.name, "— staying via", via.name)
+				}
+				return
+			}
 			if r := n.relayFor(p); r != nil {
 				p.via.Store(r)
 				log.Println("no direct path to", p.name, "— relaying via", r.name)
@@ -278,6 +315,21 @@ func (n *node) punch(p *peer, cands []string) {
 			log.Println("could not reach", p.name, "(symmetric NAT on one side?)")
 			return
 		case <-tick.C:
+			if p.direct() { // their own packet landed while we were relaying
+				log.Println("connected:", p.name, p.addr.Load(), "— direct now")
+				return
+			}
+		}
+	}
+}
+
+// adoptRelay routes everyone still without a path through a relay that just
+// became reachable, so a hello that arrived before the relay did is not
+// stuck waiting out its direct punch.
+func (n *node) adoptRelay(r *peer) {
+	for _, q := range n.peerList() {
+		if q != r && !q.direct() && q.via.Load() == nil && q.via.CompareAndSwap(nil, r) {
+			log.Println("reaching", q.name, "via", r.name, "— trying a direct path in the background")
 		}
 	}
 }
@@ -297,12 +349,17 @@ func (n *node) dropLocked(p *peer) {
 			delete(n.byAddr, k)
 		}
 	}
+	n.rebuildRoster()
 	for _, q := range n.peers {
-		if q.via.Load() == p {
-			q.via.Store(nil) // their relay is gone; the next hello re-punches
+		if q.via.Load() != p {
+			continue
+		}
+		r := n.relayFor(q) // roster is already without p
+		q.via.Store(r)     // nil: the next hello re-punches
+		if r != nil {
+			log.Println(p.name, "is gone — now relaying to", q.name, "via", r.name)
 		}
 	}
-	n.rebuildRoster()
 	p.markGone()
 }
 
@@ -456,7 +513,13 @@ func (n *node) sendLoop() {
 			clear(f) // below the gate: send silence so speaker echo isn't transmitted
 		}
 		peers := n.peerList()
-		if len(peers) == 0 {
+		people := 0
+		for _, p := range peers {
+			if !p.relay {
+				people++
+			}
+		}
+		if people == 0 {
 			continue
 		}
 		if b := int(n.ctl.bitrate.Load()); b != bitrate {
@@ -466,7 +529,9 @@ func (n *node) sendLoop() {
 		payload = appendAudio(payload, frame, enc.encode(f))
 		frame++
 		for _, p := range peers {
-			n.sendTo(p, payload)
+			if !p.relay { // a relay only forwards; audio addressed to it is dropped
+				n.sendTo(p, payload)
+			}
 		}
 	}
 }
@@ -507,6 +572,9 @@ func (n *node) mixLoop() {
 			clear(mix)
 			got := false
 			for _, p := range n.peerList() {
+				if p.relay {
+					continue
+				}
 				pcm := p.nextFrame()
 				if pcm == nil {
 					continue
@@ -575,7 +643,9 @@ func (n *node) toggleLock() string {
 	}
 	allowed := map[string]bool{n.name: true}
 	for _, p := range n.peerList() {
-		allowed[p.name] = true
+		if !p.relay {
+			allowed[p.name] = true
+		}
 	}
 	if len(allowed) < 2 {
 		return "nobody here yet — lock once your people have joined"
@@ -645,37 +715,38 @@ func (n *node) stunQuery(server string) (*net.UDPAddr, error) {
 // cycleDevice switches the mic (kind Capture) or speaker (kind Playback) to
 // the next available one, wrapping through "" = system default, and
 // remembers the choice. Returns a short label for the UI.
-func (n *node) cycleDevice(kind malgo.DeviceType) string {
+// deviceNames lists what the picker offers for kind: "" (system default)
+// first, then every device, minus loopback monitors for the microphone.
+// cur is the index of the device in use.
+func (n *node) deviceNames(kind malgo.DeviceType) (names []string, cur int) {
 	devs, err := listDevices(kind)
 	if err != nil {
 		log.Println("devices:", err)
-		return ""
 	}
-	names := []string{""} // "" = system default, always first
+	names = []string{""}
 	for i := range devs {
 		if kind == malgo.Capture && isMonitor(devs[i].Name()) {
 			continue // loopback monitors are never a usable microphone
 		}
 		names = append(names, devs[i].Name())
 	}
-	cur := n.audio.mic
+	using := n.audio.mic
 	if kind == malgo.Playback {
-		cur = n.audio.out
+		using = n.audio.out
 	}
-	idx := 0
 	for i, name := range names {
-		if name == cur {
-			idx = i
-			break
+		if name == using {
+			cur = i
 		}
 	}
-	next := names[(idx+1)%len(names)]
+	return names, cur
+}
 
-	var mic, out string
-	if kind == malgo.Capture {
-		mic, out = next, n.audio.out
-	} else {
-		mic, out = n.audio.mic, next
+// useDevice switches the microphone or speaker live and remembers it.
+func (n *node) useDevice(kind malgo.DeviceType, name string) string {
+	mic, out := name, n.audio.out
+	if kind == malgo.Playback {
+		mic, out = n.audio.mic, name
 	}
 	gotMic, gotOut, err := n.audio.reopen(mic, out)
 	if err != nil {

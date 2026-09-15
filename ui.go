@@ -13,7 +13,7 @@ import (
 const (
 	tick     = 33 * time.Millisecond
 	meterLen = 30
-	logLines = 6
+	logKeep  = 200 // log lines remembered; render shows as many as fit below the controls
 )
 
 type (
@@ -31,7 +31,56 @@ var (
 	linkSt = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
 	keySt  = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	selSt  = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
+	hotSt  = lipgloss.NewStyle().Bold(true)
 )
+
+// picker is the open device list: ↑/↓ moves, enter applies, esc closes.
+type picker struct {
+	kind  malgo.DeviceType
+	title string
+	names []string
+	idx   int
+}
+
+// hot renders word with its hotkey letter highlighted in place, so the key
+// is read off the label itself: "mic" with a lit m, "gain" with a lit a.
+func hot(word, key string) string {
+	if i := strings.Index(word, key); i >= 0 {
+		return word[:i] + hotSt.Render(key) + word[i+len(key):]
+	}
+	return hotSt.Render(key) + " " + word
+}
+
+// people are the peers that get a tile: everyone but relays.
+func (m model) people() []*peer {
+	var out []*peer
+	for _, p := range m.n.peerList() {
+		if !p.relay {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (m model) relays() []*peer {
+	var out []*peer
+	for _, p := range m.n.peerList() {
+		if p.relay {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// rttText is the round trip as shown next to a peer, "…" until the first pong.
+func rttText(p *peer) string {
+	if us := p.rttUS.Load(); us >= 1000 {
+		return fmt.Sprintf("%.0f ms", float64(us)/1000)
+	} else if us > 0 {
+		return "<1 ms"
+	}
+	return "…"
+}
 
 // ui is the bubbletea front end. The node does not push state into it: on
 // every tick the model reads the roster and levels straight from the node.
@@ -49,6 +98,8 @@ type model struct {
 	rates    map[*peer]*rate // incoming kbps per peer, sampled once a second
 	cursor   int             // selected tile in the roster
 	width    int             // terminal columns, for the tile grid
+	height   int             // terminal rows: the log fills whatever the controls leave
+	pick     *picker         // device list while one is open
 	logs     []string
 	frame    int
 }
@@ -161,19 +212,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.rates, p)
 			}
 		}
-		if m.cursor >= len(peers) {
-			m.cursor = max(0, len(peers)-1)
+		if np := len(m.people()); m.cursor >= np {
+			m.cursor = max(0, np-1)
 		}
 		return m, tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) })
 	case logMsg:
 		m.logs = append(m.logs, string(msg))
-		if len(m.logs) > logLines {
-			m.logs = m.logs[len(m.logs)-logLines:]
+		if len(m.logs) > logKeep {
+			m.logs = m.logs[len(m.logs)-logKeep:]
 		}
 	case noticeMsg:
 		m.notice, m.noticeAt = string(msg), m.frame
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
 		return m.act(msg.String())
 	case tea.MouseMsg:
@@ -207,7 +258,7 @@ func (m model) step(what string, up bool) (tea.Model, tea.Cmd) {
 		m.n.set.save()
 		return m.note(fmt.Sprintf("your bitrate %d kbps", ctl.bitrate.Load())), nil
 	}
-	peers := m.n.peerList()
+	peers := m.people()
 	if m.cursor >= len(peers) {
 		return m, nil
 	}
@@ -224,8 +275,11 @@ func (m model) step(what string, up bool) (tea.Model, tea.Cmd) {
 
 // act performs one keyboard action; mouse events are translated into these.
 func (m model) act(key string) (tea.Model, tea.Cmd) {
+	if m.pick != nil {
+		return m.pickKey(key)
+	}
 	ctl := m.n.ctl
-	peers := m.n.peerList()
+	peers := m.people()
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -268,9 +322,34 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 	case "l":
 		return m.note(m.n.toggleLock()), nil
 	case "i":
-		return m.note(m.n.cycleDevice(malgo.Capture)), nil
+		return m.openPicker(malgo.Capture, "input device"), nil
 	case "o":
-		return m.note(m.n.cycleDevice(malgo.Playback)), nil
+		return m.openPicker(malgo.Playback, "output device"), nil
+	}
+	return m, nil
+}
+
+func (m model) openPicker(kind malgo.DeviceType, title string) model {
+	names, cur := m.n.deviceNames(kind)
+	m.pick = &picker{kind: kind, title: title, names: names, idx: cur}
+	return m
+}
+
+// pickKey drives the open device list; any other key just closes it.
+func (m model) pickKey(key string) (tea.Model, tea.Cmd) {
+	p := m.pick
+	switch key {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "up", "k":
+		p.idx = max(0, p.idx-1)
+	case "down", "j":
+		p.idx = min(len(p.names)-1, p.idx+1)
+	case "enter":
+		m.pick = nil
+		return m.note(m.n.useDevice(p.kind, p.names[p.idx])), nil
+	default:
+		m.pick = nil
 	}
 	return m, nil
 }
@@ -288,6 +367,7 @@ type geometry struct {
 	tileTop, tileH, stride, cols, tiles int
 	togglesRow, actionsRow              int
 	toggles, actions                    []seg
+	pickTop, pickRows                   int // device list rows, when one is open
 }
 
 const (
@@ -311,7 +391,7 @@ func (m model) render() ([]string, geometry) {
 	}
 	add("")
 
-	peers := m.n.peerList()
+	peers := m.people()
 	names := []string{m.n.name + " (you)"}
 	for _, p := range peers {
 		names = append(names, p.name)
@@ -336,7 +416,36 @@ func (m model) render() ([]string, geometry) {
 		add("")
 		add("  " + dim.Render(spinner[m.frame%len(spinner)]+" waiting for friends — send them the link"))
 	}
+	// Relays are plumbing, not people: one line each, no tile, no volume.
+	for _, r := range m.relays() {
+		state := yellow.Render(spinner[m.frame%len(spinner)] + " connecting")
+		if r.connected() {
+			via := ""
+			if a := r.addr.Load(); a != nil {
+				via = a.String() + " · "
+			}
+			state = dim.Render(via + rttText(r))
+		}
+		add("  " + keySt.Render("⇄ "+r.name) + " " + state)
+	}
 	add("")
+
+	// An open device list takes the place of the controls until it closes.
+	if p := m.pick; p != nil {
+		add("  " + bold.Render(p.title) + dim.Render("   ↑/↓ pick · enter choose · esc close"))
+		g.pickTop, g.pickRows = len(lines), len(p.names)
+		for i, name := range p.names {
+			row := "  " + orDefault(name)
+			if i == p.idx {
+				row = selSt.Render("▸ " + orDefault(name))
+			}
+			add("  " + row)
+		}
+		g.togglesRow, g.actionsRow = -1, -1
+		add("")
+		add("  " + dim.Render("full log: "+m.logPath))
+		return lines, g
+	}
 
 	// Toggles: always visible with explicit ON/off, so a keypress visibly flips one.
 	g.togglesRow = len(lines)
@@ -348,9 +457,9 @@ func (m model) render() ([]string, geometry) {
 		} else if offRed {
 			st = red
 		}
-		plain := key + " " + name + " " + sw
+		plain := name + " " + sw
 		segs = append(segs, seg{x, x + len([]rune(plain)), key, ""})
-		line += keySt.Render(key) + " " + name + " " + st.Render(sw) + "    "
+		line += hot(name, key) + " " + st.Render(sw) + "    "
 		x += len([]rune(plain)) + 4
 	}
 	chip("m", "mic", !ctl.muted.Load(), true)
@@ -365,18 +474,23 @@ func (m model) render() ([]string, geometry) {
 	// Actions: labels that do something on click; keys shown highlighted.
 	g.actionsRow = len(lines)
 	line, segs, x = "", nil, leftPad
-	action := func(label, key, alt string) {
-		keys, word, _ := strings.Cut(label, " ")
-		segs = append(segs, seg{x, x + len([]rune(label)), key, alt})
-		line += keySt.Render(keys) + " " + word + "   "
-		x += len([]rune(label)) + 3
+	// Arrow/sign actions show their keys in front; letter actions light the
+	// letter inside the word, like the toggles above.
+	action := func(keys, word, key, alt string) {
+		plain, shown := word, hot(word, key)
+		if keys != "" {
+			plain, shown = keys+" "+word, keySt.Render(keys)+" "+word
+		}
+		segs = append(segs, seg{x, x + len([]rune(plain)), key, alt})
+		line += shown + "   "
+		x += len([]rune(plain)) + 3
 	}
-	action("↑/↓ pick", "down", "up")
-	action("←/→ volume", "right", "left")
-	action("+/- bitrate", "+", "-")
-	action("i mic-dev", "i", "")
-	action("o out-dev", "o", "")
-	action("q quit", "q", "")
+	action("↑/↓", "pick", "down", "up")
+	action("←/→", "volume", "right", "left")
+	action("+/-", "bitrate", "+", "-")
+	action("", "input", "i", "")
+	action("", "output", "o", "")
+	action("", "quit", "q", "")
 	g.actions = segs
 	add("  " + line)
 
@@ -388,17 +502,29 @@ func (m model) render() ([]string, geometry) {
 	} else {
 		add("")
 	}
-	for _, l := range m.logs {
+	// The log takes every row left below the controls, newest at the bottom,
+	// with the file path as the last line.
+	show := 3
+	if m.height > 0 {
+		show = max(0, m.height-len(lines)-1)
+	}
+	logs := m.logs
+	if len(logs) > show {
+		logs = logs[len(logs)-show:]
+	}
+	for _, l := range logs {
+		if m.width > leftPad+8 {
+			l = trunc(l, m.width-leftPad)
+		}
 		add("  " + dim.Render(l))
 	}
-	add("")
 	add("  " + dim.Render("full log: "+m.logPath))
 	return lines, g
 }
 
 func (m model) selfTile(w int) string {
 	ctl := m.n.ctl
-	head := green.Render("● you")
+	head := "" // the name already says "(you)"; only a mute needs shouting
 	if ctl.muted.Load() {
 		head = red.Render("● MUTED")
 	}
@@ -417,13 +543,7 @@ func (m model) peerTile(p *peer, i, w int) string {
 		if p.via.Load() != nil {
 			path = "◐"
 		}
-		rtt := "…"
-		if us := p.rttUS.Load(); us >= 1000 {
-			rtt = fmt.Sprintf("%.0f ms", float64(us)/1000)
-		} else if us > 0 {
-			rtt = "<1 ms"
-		}
-		status = green.Render(path) + " " + dim.Render(rtt)
+		status = green.Render(path) + " " + dim.Render(rttText(p))
 	}
 	var mt meter
 	if x := m.meters[p]; x != nil {
@@ -447,6 +567,16 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	wheel := e.Button == tea.MouseButtonWheelUp || e.Button == tea.MouseButtonWheelDown
 	up := e.Button == tea.MouseButtonWheelUp
 	if !wheel && e.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	if p := m.pick; p != nil { // the list swallows the mouse: wheel moves, click chooses
+		switch {
+		case wheel:
+			return m.pickKey(map[bool]string{true: "up", false: "down"}[up])
+		case e.Y >= g.pickTop && e.Y < g.pickTop+g.pickRows:
+			p.idx = e.Y - g.pickTop
+			return m.pickKey("enter")
+		}
 		return m, nil
 	}
 	if i, ok := g.tileAt(e.X, e.Y); ok {
@@ -517,8 +647,11 @@ var (
 )
 
 func tile(st lipgloss.Style, w int, name, status string, mt meter, foot string) string {
-	body := fmt.Sprintf("%s %s\n%s\n%s", bold.Render(trunc(name, w-4)), status, mt.bar(w-6), foot)
-	return st.Width(w).Render(body)
+	head := bold.Render(trunc(name, w-4))
+	if status != "" {
+		head += " " + status
+	}
+	return st.Width(w).Render(fmt.Sprintf("%s\n%s\n%s", head, mt.bar(w-6), foot))
 }
 
 func tileWidth(names []string, term int) int {
@@ -543,15 +676,6 @@ func trunc(s string, n int) string {
 func (m model) View() string {
 	lines, _ := m.render()
 	return strings.Join(lines, "\n")
-}
-
-// pad fixes the name column width before styling, since ANSI codes would
-// otherwise count toward %-12s.
-func pad(s string) string {
-	if len([]rune(s)) > 12 {
-		s = string([]rune(s)[:11]) + "…"
-	}
-	return fmt.Sprintf("%-12s", s)
 }
 
 func orDefault(s string) string {

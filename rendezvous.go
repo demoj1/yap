@@ -37,6 +37,7 @@ type hello struct {
 	Nonce []byte   `json:"nonce"`
 	Addrs []string `json:"addrs"`
 	Reach [][]byte `json:"reach,omitempty"`
+	Relay bool     `json:"relay,omitempty"` // headless forwarder, not a person: no audio, never locked out
 }
 
 // room fans hellos out across every rendezvous host.
