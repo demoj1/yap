@@ -23,6 +23,8 @@ import (
 // host rate-limiting us (429) or going down no longer breaks the call. The
 // payload is AEAD-encrypted, so plain http mirrors are fine. Add your own
 // (e.g. a self-hosted ntfy) via -rendezvous.
+const staleHello = 60 // seconds: a cached hello older than this belongs to a run that is gone
+
 var rendezvousHosts = []string{
 	"https://ntfy.sh",
 	"https://ntfy.envs.net",
@@ -158,9 +160,16 @@ func (r *room) stream(ctx context.Context, url string, out chan<- hello) time.Du
 	var ev struct {
 		Event   string `json:"event"`
 		Message string `json:"message"`
+		Time    int64  `json:"time"` // unix seconds the host received it
 	}
 	for sc.Scan() {
 		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Event != "message" {
+			continue
+		}
+		// The replayed cache also holds hellos of runs that are already gone
+		// (our own previous one included); everyone alive re-announces within
+		// announceEvery, so anything older than that is a ghost.
+		if ev.Time != 0 && time.Now().Unix()-ev.Time > staleHello {
 			continue
 		}
 		if h, ok := r.open(ev.Message); ok {
