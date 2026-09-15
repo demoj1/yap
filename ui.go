@@ -456,17 +456,21 @@ func (m model) choose(kind malgo.DeviceType, name string) (tea.Model, tea.Cmd) {
 type seg struct {
 	x0, x1   int
 	key, alt string
+	row      int
+}
+
+// devBox is where one device tile's rows landed, for clicks.
+type devBox struct {
+	top, x0, x1, rows int // rows start 2 below top (border + title)
 }
 
 // geometry is where render() put things, so mouse() can hit-test exactly the
 // same layout that was drawn.
 type geometry struct {
 	tileTop, tileH, stride, cols, tiles int
-	togglesRow, actionsRow, promptRow   int
-	linkRow                             int // a click on the link copies it
-	toggles, actions, prompt            []seg
-	devTop, devStride                   int // device tiles: rows start 2 below the top (border + title)
-	devRows                             [2]int
+	linkRow                             int   // a click on the link copies it
+	ctl                                 []seg // toggles, actions and the update prompt, each on its row
+	dev                                 [2]devBox
 }
 
 const (
@@ -481,21 +485,25 @@ func (m model) render() ([]string, geometry) {
 	ctl := m.n.ctl
 	var g geometry
 	var lines []string
-	add := func(s string) { lines = append(lines, s) }
+	clip := lipgloss.NewStyle().MaxWidth(max(1, m.width)) // a line that wrapped would shift every row below it
+	add := func(s string) {
+		if m.width > 0 {
+			s = clip.Render(s)
+		}
+		lines = append(lines, s)
+	}
 
 	add("")
 	g.linkRow = len(lines)
 	add("  " + linkSt.Render(m.n.link.String()) + dim.Render("   c to copy"))
-	g.promptRow = -1
 	if tag := m.n.update.Load(); tag != nil {
 		if m.asked {
 			add("  " + dim.Render(*tag+" is out — yap update"))
 		} else { // the dialog: y updates and restarts into the same room, n dismisses
-			g.promptRow = len(lines)
 			lead := fmt.Sprintf("⬆ %s available (you run %s) — update now?   ", *tag, version)
 			yes, no := "[y] yes", "[n] later"
-			x := leftPad + len([]rune(lead))
-			g.prompt = []seg{{x, x + len(yes), "y", ""}, {x + len(yes) + 3, x + len(yes) + 3 + len(no), "n", ""}}
+			x, row := leftPad+len([]rune(lead)), len(lines)
+			g.ctl = append(g.ctl, seg{x, x + len(yes), "y", "", row}, seg{x + len(yes) + 3, x + len(yes) + 3 + len(no), "n", "", row})
 			add("  " + yellow.Render(lead) + hotSt.Render(yes) + "   " + hotSt.Render(no))
 		}
 	}
@@ -540,9 +548,24 @@ func (m model) render() ([]string, geometry) {
 	}
 	add("")
 
+	// Toggles and actions flow left to right and wrap on a narrow terminal;
+	// every span remembers its row, so the mouse finds it wherever it landed.
+	line, x := "", leftPad
+	flush := func() {
+		if line != "" {
+			add("  " + strings.TrimRight(line, " "))
+			line, x = "", leftPad
+		}
+	}
+	put := func(plain, shown, key, alt string, gap int) {
+		if line != "" && m.width > 0 && x+len([]rune(plain)) > m.width-1 {
+			flush()
+		}
+		g.ctl = append(g.ctl, seg{x, x + len([]rune(plain)), key, alt, len(lines)})
+		line += shown + strings.Repeat(" ", gap)
+		x += len([]rune(plain)) + gap
+	}
 	// Toggles: always visible with explicit ON/off, so a keypress visibly flips one.
-	g.togglesRow = len(lines)
-	line, segs, x := "", []seg(nil), leftPad
 	chip := func(key, name string, on, offRed bool) {
 		sw, st := "○ off", dim
 		if on {
@@ -550,10 +573,7 @@ func (m model) render() ([]string, geometry) {
 		} else if offRed {
 			st = red
 		}
-		plain := name + " " + sw
-		segs = append(segs, seg{x, x + len([]rune(plain)), key, ""})
-		line += hot(name, key) + " " + st.Render(sw) + "    "
-		x += len([]rune(plain)) + 4
+		put(name+" "+sw, hot(name, key)+" "+st.Render(sw), key, "", 4)
 	}
 	chip("m", "mic", !ctl.muted.Load(), true)
 	chip("d", "denoise", ctl.denoise.Load(), false)
@@ -562,22 +582,16 @@ func (m model) render() ([]string, geometry) {
 	chip("a", "gain", ctl.agc.Load(), false)
 	chip("l", "lock", m.n.locked.Load(), false)
 	chip("p", "ptt", ctl.ptt.Load(), false)
-	g.toggles = segs
-	add("  " + line)
+	flush()
 
-	// Actions: labels that do something on click; keys shown highlighted.
-	g.actionsRow = len(lines)
-	line, segs, x = "", nil, leftPad
-	// Arrow/sign actions show their keys in front; letter actions light the
-	// letter inside the word, like the toggles above.
+	// Actions: arrow/sign ones show their keys in front; letter ones light
+	// the letter inside the word, like the toggles above.
 	action := func(keys, word, key, alt string) {
 		plain, shown := word, hot(word, key)
 		if keys != "" {
 			plain, shown = keys+" "+word, keySt.Render(keys)+" "+word
 		}
-		segs = append(segs, seg{x, x + len([]rune(plain)), key, alt})
-		line += shown + "   "
-		x += len([]rune(plain)) + 3
+		put(plain, shown, key, alt, 3)
 	}
 	action("↑/↓", "pick", "down", "up")
 	action("←/→", "volume", "right", "left")
@@ -586,19 +600,30 @@ func (m model) render() ([]string, geometry) {
 	action("", "output", "o", "")
 	action("", "copy", "c", "")
 	action("", "quit", "q", "")
-	g.actions = segs
-	add("  " + line)
+	flush()
 	add("")
 
 	// Device tiles: every microphone and speaker listed, the one in use
-	// marked; a click on a row switches to it.
+	// marked; a click on a row switches to it. Side by side when they fit,
+	// stacked on a narrow terminal.
+	stack := m.width > 0 && m.width < 2*(tileMinW+2)+leftPad+1
 	dw := max(tileMinW, min(m.width/2-leftPad-1, 60))
+	if stack {
+		dw = max(tileMinW, min(m.width-leftPad-2, 60))
+	}
 	in := deviceTile(dw, "input", "i", m.inputs, m.n.audio.mic)
 	out := deviceTile(dw, "output", "o", m.outputs, m.n.audio.out)
-	g.devTop, g.devStride = len(lines), lipgloss.Width(strings.SplitN(in, "\n", 2)[0])
-	g.devRows = [2]int{len(m.inputs), len(m.outputs)}
-	block := lipgloss.NewStyle().PaddingLeft(leftPad).Render(lipgloss.JoinHorizontal(lipgloss.Top, in, out))
-	for _, ln := range strings.Split(block, "\n") {
+	stride := lipgloss.Width(strings.SplitN(in, "\n", 2)[0])
+	g.dev[0] = devBox{len(lines), leftPad, leftPad + stride, len(m.inputs)}
+	var block string
+	if stack {
+		g.dev[1] = devBox{len(lines) + lipgloss.Height(in), leftPad, leftPad + stride, len(m.outputs)}
+		block = lipgloss.JoinVertical(lipgloss.Left, in, out)
+	} else {
+		g.dev[1] = devBox{len(lines), leftPad + stride, leftPad + 2*stride, len(m.outputs)}
+		block = lipgloss.JoinHorizontal(lipgloss.Top, in, out)
+	}
+	for _, ln := range strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(block), "\n") {
 		add(ln)
 	}
 
@@ -722,10 +747,13 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if !wheel && e.Action != tea.MouseActionPress {
 		return m, nil
 	}
-	if !wheel && e.X >= leftPad && e.Y >= g.devTop+2 { // a device row?
-		col, row := (e.X-leftPad)/max(1, g.devStride), e.Y-g.devTop-2
-		if col < 2 && row < g.devRows[col] {
-			if col == 0 {
+	if !wheel { // a device row?
+		for i, d := range g.dev {
+			row := e.Y - d.top - 2
+			if row < 0 || row >= d.rows || e.X < d.x0 || e.X >= d.x1 {
+				continue
+			}
+			if i == 0 {
 				return m.choose(malgo.Capture, m.inputs[row])
 			}
 			return m.choose(malgo.Playback, m.outputs[row])
@@ -745,33 +773,19 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	hit := func(row int, segs []seg) (tea.Model, tea.Cmd, bool) {
-		if e.Y != row || wheel {
-			return m, nil, false
-		}
-		for _, s := range segs {
-			if e.X >= s.x0 && e.X < s.x1 {
-				key := s.key
-				if e.Button == tea.MouseButtonRight && s.alt != "" {
-					key = s.alt
-				}
-				mm, cmd := m.act(key)
-				return mm, cmd, true
-			}
-		}
-		return m, nil, false
+	if wheel {
+		return m, nil
 	}
-	if !wheel && e.Y == g.linkRow {
+	if e.Y == g.linkRow {
 		return m.act("c")
 	}
-	if mm, cmd, ok := hit(g.promptRow, g.prompt); ok {
-		return mm, cmd
-	}
-	if mm, cmd, ok := hit(g.togglesRow, g.toggles); ok {
-		return mm, cmd
-	}
-	if mm, cmd, ok := hit(g.actionsRow, g.actions); ok {
-		return mm, cmd
+	for _, s := range g.ctl { // toggles, actions, update prompt: right-click takes alt
+		if e.Y == s.row && e.X >= s.x0 && e.X < s.x1 {
+			if e.Button == tea.MouseButtonRight && s.alt != "" {
+				return m.act(s.alt)
+			}
+			return m.act(s.key)
+		}
 	}
 	return m, nil
 }
