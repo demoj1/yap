@@ -34,13 +34,7 @@ var (
 	hotSt  = lipgloss.NewStyle().Bold(true)
 )
 
-// picker is the open device list: ↑/↓ moves, enter applies, esc closes.
-type picker struct {
-	kind  malgo.DeviceType
-	title string
-	names []string
-	idx   int
-}
+const devRefresh = 150 // frames (~5 s) between device list refreshes
 
 // hot renders word with its hotkey letter highlighted in place, so the key
 // is read off the label itself: "mic" with a lit m, "gain" with a lit a.
@@ -99,7 +93,8 @@ type model struct {
 	cursor   int             // selected tile in the roster
 	width    int             // terminal columns, for the tile grid
 	height   int             // terminal rows: the log fills whatever the controls leave
-	pick     *picker         // device list while one is open
+	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
+	outputs  []string
 	logs     []string
 	frame    int
 }
@@ -187,6 +182,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.frame++
+		if m.frame%devRefresh == 1 {
+			m.inputs, _ = m.n.deviceNames(malgo.Capture)
+			m.outputs, _ = m.n.deviceNames(malgo.Playback)
+		}
 		m.mic.feed(m.n.audio.micPeak.take(), m.frame)
 		peers := m.n.peerList()
 		alive := map[*peer]bool{}
@@ -275,9 +274,6 @@ func (m model) step(what string, up bool) (tea.Model, tea.Cmd) {
 
 // act performs one keyboard action; mouse events are translated into these.
 func (m model) act(key string) (tea.Model, tea.Cmd) {
-	if m.pick != nil {
-		return m.pickKey(key)
-	}
 	ctl := m.n.ctl
 	peers := m.people()
 	switch key {
@@ -322,35 +318,24 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 	case "l":
 		return m.note(m.n.toggleLock()), nil
 	case "i":
-		return m.openPicker(malgo.Capture, "input device"), nil
+		return m.nextDevice(malgo.Capture)
 	case "o":
-		return m.openPicker(malgo.Playback, "output device"), nil
+		return m.nextDevice(malgo.Playback)
 	}
 	return m, nil
 }
 
-func (m model) openPicker(kind malgo.DeviceType, title string) model {
+// nextDevice cycles the microphone or speaker to the next one in its tile.
+func (m model) nextDevice(kind malgo.DeviceType) (tea.Model, tea.Cmd) {
 	names, cur := m.n.deviceNames(kind)
-	m.pick = &picker{kind: kind, title: title, names: names, idx: cur}
-	return m
+	return m.choose(kind, names[(cur+1)%len(names)])
 }
 
-// pickKey drives the open device list; any other key just closes it.
-func (m model) pickKey(key string) (tea.Model, tea.Cmd) {
-	p := m.pick
-	switch key {
-	case "ctrl+c":
-		return m, tea.Quit
-	case "up", "k":
-		p.idx = max(0, p.idx-1)
-	case "down", "j":
-		p.idx = min(len(p.names)-1, p.idx+1)
-	case "enter":
-		m.pick = nil
-		return m.note(m.n.useDevice(p.kind, p.names[p.idx])), nil
-	default:
-		m.pick = nil
-	}
+// choose switches to a device and refreshes the tiles so the mark moves now.
+func (m model) choose(kind malgo.DeviceType, name string) (tea.Model, tea.Cmd) {
+	m = m.note(m.n.useDevice(kind, name))
+	m.inputs, _ = m.n.deviceNames(malgo.Capture)
+	m.outputs, _ = m.n.deviceNames(malgo.Playback)
 	return m, nil
 }
 
@@ -367,7 +352,8 @@ type geometry struct {
 	tileTop, tileH, stride, cols, tiles int
 	togglesRow, actionsRow              int
 	toggles, actions                    []seg
-	pickTop, pickRows                   int // device list rows, when one is open
+	devTop, devStride                   int // device tiles: rows start 2 below the top (border + title)
+	devRows                             [2]int
 }
 
 const (
@@ -430,23 +416,6 @@ func (m model) render() ([]string, geometry) {
 	}
 	add("")
 
-	// An open device list takes the place of the controls until it closes.
-	if p := m.pick; p != nil {
-		add("  " + bold.Render(p.title) + dim.Render("   ↑/↓ pick · enter choose · esc close"))
-		g.pickTop, g.pickRows = len(lines), len(p.names)
-		for i, name := range p.names {
-			row := "  " + orDefault(name)
-			if i == p.idx {
-				row = selSt.Render("▸ " + orDefault(name))
-			}
-			add("  " + row)
-		}
-		g.togglesRow, g.actionsRow = -1, -1
-		add("")
-		add("  " + dim.Render("full log: "+m.logPath))
-		return lines, g
-	}
-
 	// Toggles: always visible with explicit ON/off, so a keypress visibly flips one.
 	g.togglesRow = len(lines)
 	line, segs, x := "", []seg(nil), leftPad
@@ -493,10 +462,20 @@ func (m model) render() ([]string, geometry) {
 	action("", "quit", "q", "")
 	g.actions = segs
 	add("  " + line)
+	add("")
 
-	if m.n.set.Mic != "" || m.n.set.Out != "" {
-		add("  " + dim.Render(fmt.Sprintf("devices: mic %s · out %s", orDefault(m.n.set.Mic), orDefault(m.n.set.Out))))
+	// Device tiles: every microphone and speaker listed, the one in use
+	// marked; a click on a row switches to it.
+	dw := max(tileMinW, min(m.width/2-leftPad-1, 60))
+	in := deviceTile(dw, "input", "i", m.inputs, m.n.audio.mic)
+	out := deviceTile(dw, "output", "o", m.outputs, m.n.audio.out)
+	g.devTop, g.devStride = len(lines), lipgloss.Width(strings.SplitN(in, "\n", 2)[0])
+	g.devRows = [2]int{len(m.inputs), len(m.outputs)}
+	block := lipgloss.NewStyle().PaddingLeft(leftPad).Render(lipgloss.JoinHorizontal(lipgloss.Top, in, out))
+	for _, ln := range strings.Split(block, "\n") {
+		add(ln)
 	}
+
 	if m.notice != "" && m.frame-m.noticeAt < 60 {
 		add("  " + yellow.Render("▸ "+m.notice))
 	} else {
@@ -569,15 +548,14 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if !wheel && e.Action != tea.MouseActionPress {
 		return m, nil
 	}
-	if p := m.pick; p != nil { // the list swallows the mouse: wheel moves, click chooses
-		switch {
-		case wheel:
-			return m.pickKey(map[bool]string{true: "up", false: "down"}[up])
-		case e.Y >= g.pickTop && e.Y < g.pickTop+g.pickRows:
-			p.idx = e.Y - g.pickTop
-			return m.pickKey("enter")
+	if !wheel && e.X >= leftPad && e.Y >= g.devTop+2 { // a device row?
+		col, row := (e.X-leftPad)/max(1, g.devStride), e.Y-g.devTop-2
+		if col < 2 && row < g.devRows[col] {
+			if col == 0 {
+				return m.choose(malgo.Capture, m.inputs[row])
+			}
+			return m.choose(malgo.Playback, m.outputs[row])
 		}
-		return m, nil
 	}
 	if i, ok := g.tileAt(e.X, e.Y); ok {
 		switch {
@@ -652,6 +630,19 @@ func tile(st lipgloss.Style, w int, name, status string, mt meter, foot string) 
 		head += " " + status
 	}
 	return st.Width(w).Render(fmt.Sprintf("%s\n%s\n%s", head, mt.bar(w-6), foot))
+}
+
+// deviceTile lists devices under a hotkey-lit title, marking the one in use.
+func deviceTile(w int, title, key string, names []string, using string) string {
+	rows := []string{hot(title, key)}
+	for _, name := range names {
+		if name == using {
+			rows = append(rows, green.Render("● "+trunc(orDefault(name), w-6)))
+		} else {
+			rows = append(rows, dim.Render("  "+trunc(orDefault(name), w-6)))
+		}
+	}
+	return tileSt.Width(w).Render(strings.Join(rows, "\n"))
 }
 
 func tileWidth(names []string, term int) int {
