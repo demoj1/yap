@@ -82,8 +82,8 @@ func (m model) knobs() []knob {
 	}
 	return []knob{
 		{"echo tail", "ms", func() int { return s.AECTail }, func(v int) { s.AECTail = v; apply() }, 25, 100, 600},
-		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 2, -80, -10},
-		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 2, -50, -4},
+		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 5, -80, -10},
+		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 5, -50, -5},
 	}
 }
 
