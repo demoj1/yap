@@ -40,7 +40,6 @@ var (
 const (
 	devRefresh   = 150             // frames (~5 s) between device list refreshes
 	noReplyAfter = 3 * time.Second // a connected peer silent this long is flagged on its tile
-	wheelGap     = 5               // frames (~150 ms) between wheel steps on a knob
 )
 
 // copyToClipboard puts s on the clipboard every way that might work: OSC 52
@@ -163,7 +162,6 @@ type model struct {
 	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
 	outputs  []string
 	tune     int            // selected row of the tuning tile
-	wheelAt  int            // frame of the last wheel step taken on a knob: one notch sends several events
 	seen     map[*peer]bool // people heard from at least once: a new one chimes in, a vanished one chimes out
 	asked    bool           // the update dialog was answered (either way)
 	doUpdate bool           // the answer was yes: main updates and restarts after the TUI exits
@@ -677,7 +675,7 @@ func (m model) render() ([]string, geometry) {
 
 	// Tuning tile: the echo canceller knobs, one per row, saved as they turn.
 	knobs := m.knobs()
-	rows := []string{bold.Render("tuning") + dim.Render("   tab picks · [ ] or ◂ ▸ turn")}
+	rows := []string{bold.Render("tuning") + dim.Render("   tab picks · [ ] or click ◂ ▸")}
 	g.arrows = g.arrows[:0]
 	for i, k := range knobs {
 		val := fmt.Sprintf("◂ %d %s ▸", k.get(), k.unit)
@@ -818,23 +816,15 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if !wheel && e.Action != tea.MouseActionPress {
 		return m, nil
 	}
-	if t := g.tune; e.Y >= t.top+2 && e.Y < t.top+2+t.rows && e.X >= t.x0 && e.X < t.x1 {
-		m.tune = e.Y - t.top - 2
+	if t := g.tune; !wheel && e.Y >= t.top+2 && e.Y < t.top+2+t.rows && e.X >= t.x0 && e.X < t.x1 {
+		m.tune = e.Y - t.top - 2 // only the arrows turn a knob; the wheel is too easy to nudge by accident
 		switch {
-		case wheel && m.frame-m.wheelAt < wheelGap:
-			return m, nil // the rest of this notch's burst
-		case wheel && up:
-			m.wheelAt = m.frame
-			return m.turn(+1)
-		case wheel:
-			m.wheelAt = m.frame
-			return m.turn(-1)
 		case e.X <= g.arrows[m.tune][0]+1: // on or next to ◂
 			return m.turn(-1)
 		case e.X >= g.arrows[m.tune][1]-1: // on or next to ▸
 			return m.turn(+1)
 		}
-		return m, nil // a click on the name just selects the row
+		return m, nil
 	}
 	if !wheel { // a device row?
 		for i, d := range g.dev {
