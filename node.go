@@ -163,9 +163,9 @@ func (n *node) onHello(h hello) bool {
 		return false
 	}
 	n.mu.Lock()
-	if n.locked.Load() && !n.allowed[string(h.ID)] {
+	if n.locked.Load() && !n.allowed[h.Name] {
 		n.mu.Unlock()
-		return false // room is locked to newcomers
+		return false // room is locked to newcomers (matched by name, so a reconnect is let back in)
 	}
 	old, known := n.peers[string(h.ID)]
 	if known && string(old.nonce) == string(h.Nonce) {
@@ -540,15 +540,20 @@ func (n *node) toggleLock() string {
 		return "room unlocked — anyone with the link can join"
 	}
 	n.mu.Lock()
-	n.allowed = map[string]bool{string(n.id): true}
-	for id := range n.peers {
-		n.allowed[id] = true
+	allowed := map[string]bool{n.name: true}
+	for _, p := range n.peers {
+		allowed[p.name] = true
 	}
-	count := len(n.allowed)
+	n.mu.Unlock()
+	if len(allowed) < 2 {
+		return "nobody here yet — lock once your people have joined"
+	}
+	n.mu.Lock()
+	n.allowed = allowed
 	n.mu.Unlock()
 	n.locked.Store(true)
-	log.Printf("room locked with %d participant(s)", count)
-	return fmt.Sprintf("room LOCKED — %d here, no one new gets in", count)
+	log.Printf("room locked with %d participant(s)", len(allowed))
+	return fmt.Sprintf("room LOCKED — %d here, no one new gets in", len(allowed))
 }
 
 // rebuildRoster refreshes the cached snapshot. Call with n.mu held after any
