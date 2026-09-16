@@ -43,7 +43,7 @@ func New(frame, tail, sampleRate int) *Canceller {
 	C.speex_echo_ctl(c.echo, C.SPEEX_ECHO_SET_SAMPLING_RATE, unsafe.Pointer(&rate))
 	c.pre = C.speex_preprocess_state_init(C.int(frame), rate)
 	C.speex_preprocess_ctl(c.pre, C.SPEEX_PREPROCESS_SET_ECHO_STATE, unsafe.Pointer(c.echo))
-	c.SetSuppress(-60, -30)
+	c.SetSuppress(-45, -20)
 	return c
 }
 

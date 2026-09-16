@@ -11,7 +11,7 @@ import (
 // testModel is a screen over a node with no socket and no sound card: enough
 // to draw every frame and press every key.
 func testModel(t *testing.T) model {
-	set := &settings{path: filepath.Join(t.TempDir(), "settings.json"), Volumes: map[string]int{}, AECSuppress: -60, AECSuppressActive: -30}
+	set := &settings{path: filepath.Join(t.TempDir(), "settings.json"), Volumes: map[string]int{}, AECSuppress: -45, AECSuppressActive: -20}
 	n := newNode(newLink(), "me", &controls{}, set)
 	n.audio = &audio{aec: aec.New(frameSize/2, sampleRate*aecTailMS/1000, sampleRate)}
 	n.rebuildRoster()

@@ -51,10 +51,10 @@ func loadSettings() *settings {
 		s.Bitrate = 96
 	}
 	if s.AECSuppress == 0 {
-		s.AECSuppress = -60
+		s.AECSuppress = -45
 	}
 	if s.AECSuppressActive == 0 {
-		s.AECSuppressActive = -30
+		s.AECSuppressActive = -20
 	}
 	return s
 }
