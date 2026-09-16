@@ -28,7 +28,8 @@ func (n *node) addPeer(other *node, direct bool) *peer {
 	p := newPeer(n.link, n.id, n.nonce, other.helloOf())
 	p.since = time.Now()
 	if direct {
-		p.addr.Store(other.conn.LocalAddr().(*net.UDPAddr))
+		ap := other.conn.LocalAddr().(*net.UDPAddr).AddrPort()
+		p.addr.Store(&ap)
 	}
 	n.mu.Lock()
 	n.peers[string(p.id)] = p

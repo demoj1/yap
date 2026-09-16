@@ -5,7 +5,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"fmt"
-	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,8 +90,8 @@ type peer struct {
 	ver      string // their build, "" for anything before versions were announced
 	nonce    []byte
 	aead     cipher.AEAD
-	dir      uint32 // our sending direction toward this peer
-	addr     atomic.Pointer[net.UDPAddr]
+	dir      uint32                         // our sending direction toward this peer
+	addr     atomic.Pointer[netip.AddrPort] // where their packets come from; nil until one arrived directly
 	seq      atomic.Uint64
 	rx, tx   atomic.Uint64
 	txBytes  atomic.Uint64
@@ -167,11 +167,11 @@ func (p *peer) open(pkt []byte) ([]byte, bool) {
 }
 
 // accept records an authenticated packet: locks the peer to the address it
-// came from (nil for a relayed packet — the relay's address is not theirs),
+// came from (zero for a relayed packet — the relay's address is not theirs),
 // updates liveness/jitter, and queues audio.
-func (p *peer) accept(from *net.UDPAddr, seq uint64, audio []byte) {
-	if from != nil {
-		p.addr.Store(from)
+func (p *peer) accept(from netip.AddrPort, seq uint64, audio []byte) {
+	if cur := p.addr.Load(); from.IsValid() && (cur == nil || *cur != from) {
+		p.addr.Store(&from) // only a change allocates
 	}
 	p.once.Do(func() { close(p.ready) })
 	if audio != nil {

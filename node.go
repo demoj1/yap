@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -45,9 +46,9 @@ type node struct {
 	set      *settings
 
 	mu     sync.Mutex
-	peers  map[string]*peer // by string(id)
-	byAddr map[string]*peer // source address → peer, once a packet authenticated
-	joined int64            // monotonic, so the roster keeps join order
+	peers  map[string]*peer         // by string(id)
+	byAddr map[netip.AddrPort]*peer // source address → peer, once a packet authenticated
+	joined int64                    // monotonic, so the roster keeps join order
 
 	stunCh  chan []byte // STUN replies, routed out of recvLoop
 	cues    chan int    // join/leave chimes queued for the mixer
@@ -65,7 +66,7 @@ type node struct {
 func newNode(l link, name string, ctl *controls, set *settings) *node {
 	return &node{link: l, name: name, ctl: ctl, set: set,
 		id: randBytes(8), nonce: randBytes(16),
-		peers: map[string]*peer{}, byAddr: map[string]*peer{},
+		peers: map[string]*peer{}, byAddr: map[netip.AddrPort]*peer{},
 		stunCh: make(chan []byte, 4), cues: make(chan int, 8)}
 }
 
@@ -299,9 +300,13 @@ func (n *node) punch(p *peer, cands []string) {
 		return
 	}
 	defer p.punching.Store(false)
-	var addrs []*net.UDPAddr
+	// A private candidate is only worth a packet when it is on one of our
+	// own networks; someone else's 192.168.x.x would just be noise sent
+	// into the internet for twenty seconds.
+	nets := localNets()
+	var addrs []netip.AddrPort
 	for _, c := range cands {
-		if a, err := net.ResolveUDPAddr("udp4", c); err == nil {
+		if a, err := netip.ParseAddrPort(c); err == nil && (!a.Addr().IsPrivate() || onNets(a.Addr(), nets)) {
 			addrs = append(addrs, a)
 		}
 	}
@@ -321,7 +326,7 @@ func (n *node) punch(p *peer, cands []string) {
 	ready := p.ready // fires once; nil afterwards so the loop keeps punching
 	for {
 		for _, a := range addrs {
-			n.conn.WriteToUDP(p.seal(nil), a)
+			n.conn.WriteToUDPAddrPort(p.seal(nil), a)
 		}
 		select {
 		case <-ready:
@@ -408,7 +413,7 @@ func (n *node) dropLocked(p *peer) {
 func (n *node) recvLoop() {
 	buf := make([]byte, 1500)
 	for {
-		c, from, err := n.conn.ReadFromUDP(buf)
+		c, from, err := n.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
 		}
@@ -420,9 +425,8 @@ func (n *node) recvLoop() {
 			}
 			continue
 		}
-		key := from.String()
 		n.mu.Lock()
-		p := n.byAddr[key]
+		p := n.byAddr[from]
 		n.mu.Unlock()
 		if p != nil {
 			if plain, ok := p.open(pkt); ok {
@@ -433,7 +437,7 @@ func (n *node) recvLoop() {
 		for _, q := range n.peerList() {
 			if plain, ok := q.open(pkt); ok {
 				n.mu.Lock()
-				n.byAddr[key] = q
+				n.byAddr[from] = q
 				n.mu.Unlock()
 				n.dispatch(q, from, pkt, plain)
 				break
@@ -445,7 +449,7 @@ func (n *node) recvLoop() {
 // dispatch handles an authenticated packet from peer q at addr from: audio
 // for the mixer, a forward request to pass on, or a relayed packet from a
 // third peer to unwrap.
-func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
+func (n *node) dispatch(q *peer, from netip.AddrPort, pkt, plain []byte) {
 	if len(plain) == 0 {
 		q.accept(from, 0, nil)
 		return
@@ -464,7 +468,7 @@ func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
 		out = append(out, typRelayed)
 		out = append(out, q.id...)
 		out = append(out, plain[1+idLen:]...)
-		n.conn.WriteToUDP(dst.seal(out), dst.addr.Load())
+		n.conn.WriteToUDPAddrPort(dst.seal(out), *dst.addr.Load())
 	case typRelayed:
 		q.accept(from, 0, nil)
 		if len(plain) < 1+idLen+8 {
@@ -481,15 +485,15 @@ func (n *node) dispatch(q *peer, from *net.UDPAddr, pkt, plain []byte) {
 		if !src.direct() && src.via.Load() == nil {
 			src.via.Store(q) // they found a relay to us; answer the same way
 		}
-		n.deliver(src, nil, innerPlain) // nil: the relay's address is not theirs
+		n.deliver(src, netip.AddrPort{}, innerPlain) // no address: the relay's is not theirs
 	default:
 		n.deliver(q, from, plain)
 	}
 }
 
 // deliver handles an end-to-end payload from p: audio for the mixer, or a
-// ping/pong for the round-trip meter. from is nil when it came via a relay.
-func (n *node) deliver(p *peer, from *net.UDPAddr, plain []byte) {
+// ping/pong for the round-trip meter. from is zero when it came via a relay.
+func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 	if len(plain) == 0 {
 		p.accept(from, 0, nil)
 		return
@@ -613,20 +617,20 @@ func (n *node) sendLoop() {
 // while neither exists.
 func (n *node) sendTo(p *peer, payload []byte) {
 	var pkt []byte
-	var to *net.UDPAddr
+	var to netip.AddrPort
 	if addr := p.addr.Load(); addr != nil {
-		pkt, to = p.seal(payload), addr
+		pkt, to = p.seal(payload), *addr
 	} else if via := p.via.Load(); via != nil && via.direct() {
 		inner := p.seal(payload)
 		fwd := make([]byte, 0, 1+idLen+len(inner))
 		fwd = append(fwd, typForward)
 		fwd = append(fwd, p.id...)
 		fwd = append(fwd, inner...)
-		pkt, to = via.seal(fwd), via.addr.Load()
+		pkt, to = via.seal(fwd), *via.addr.Load()
 	} else {
 		return
 	}
-	if _, err := n.conn.WriteToUDP(pkt, to); err != nil {
+	if _, err := n.conn.WriteToUDPAddrPort(pkt, to); err != nil {
 		log.Println("send:", err)
 	}
 	p.tx.Add(1)

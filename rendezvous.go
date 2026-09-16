@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -190,14 +192,20 @@ func (r *room) open(msg string) (hello, bool) {
 func candidates(conn *net.UDPConn, pub *net.UDPAddr) []string {
 	port := conn.LocalAddr().(*net.UDPAddr).Port
 	var out []string
-	ifaces, _ := net.Interfaces()
-	seen := map[string]bool{}
-	add := func(a string) {
-		if a != "" && !seen[a] {
-			seen[a] = true
-			out = append(out, a)
-		}
+	for _, ipn := range localNets() {
+		out = append(out, (&net.UDPAddr{IP: ipn.IP, Port: port}).String())
 	}
+	if pub != nil && !slices.Contains(out, pub.String()) {
+		out = append(out, pub.String())
+	}
+	return out
+}
+
+// localNets are the IPv4 networks of the interfaces that count: up, not
+// loopback, not a container bridge.
+func localNets() []*net.IPNet {
+	var nets []*net.IPNet
+	ifaces, _ := net.Interfaces()
 	for _, ifc := range ifaces {
 		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || isContainerBridge(ifc.Name) {
 			continue
@@ -205,14 +213,16 @@ func candidates(conn *net.UDPConn, pub *net.UDPAddr) []string {
 		addrs, _ := ifc.Addrs()
 		for _, a := range addrs {
 			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
-				add((&net.UDPAddr{IP: ipn.IP, Port: port}).String())
+				nets = append(nets, ipn)
 			}
 		}
 	}
-	if pub != nil {
-		add(pub.String())
-	}
-	return out
+	return nets
+}
+
+// onNets reports whether ip lies on one of the networks.
+func onNets(ip netip.Addr, nets []*net.IPNet) bool {
+	return slices.ContainsFunc(nets, func(n *net.IPNet) bool { return n.Contains(ip.AsSlice()) })
 }
 
 // isContainerBridge skips docker/podman/virtual bridge interfaces whose
