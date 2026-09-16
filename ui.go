@@ -720,12 +720,15 @@ func (s *screen) bottom() {
 // worst ping and jitter, a quality grade from recent drops, and the drop
 // counters themselves. Per-person detail stays on the tiles.
 func (m model) statusBar() string {
+	people := m.n.people()
+	if len(people) == 0 {
+		return dim.Render(version + " · tx 0 kbps · rx 0 kbps · nobody to talk to yet")
+	}
 	var rx, bad float64
 	var rtt, jit int64
 	var lost, stall, skip, rebuf uint64
 	relayed := 0
-	peers := m.n.people()
-	for _, p := range peers {
+	for _, p := range people {
 		if v := m.views[p]; v != nil {
 			rx += v.rate.kbps
 			bad = max(bad, v.rate.bad)
@@ -736,26 +739,21 @@ func (m model) statusBar() string {
 		stall += p.jb.stall.Load()
 		skip += p.jb.skip.Load()
 		rebuf += p.jb.rebuf.Load()
-		if p.via.Load() != nil && !p.direct() {
+		if !p.direct() && p.via.Load() != nil {
 			relayed++
 		}
 	}
-	tx := int(m.n.ctl.bitrate.Load()) * len(peers)
-	if m.n.ctl.muted.Load() {
+	tx := int(m.n.ctl.bitrate.Load()) * len(people)
+	if m.n.ctl.silenced() {
 		tx = 0
 	}
-	sep := dim.Render(" · ")
-	if len(peers) == 0 {
-		return dim.Render(version + " · tx 0 kbps · rx 0 kbps · nobody to talk to yet")
-	}
-	s := fmt.Sprintf("%s%stx %d kbps%srx %.0f kbps", dim.Render(version), sep, tx, sep, rx)
-	s += fmt.Sprintf("%sping %.0f ms%sjitter %.1f ms", sep, float64(rtt)/1000, sep, float64(jit)/1000)
-	s += sep + "voice " + quality(bad)
-	s += sep + dim.Render(fmt.Sprintf("drops %d (lost %d · stall %d · skip %d · rebuf %d)", lost+stall+skip+rebuf, lost, stall, skip, rebuf))
+	parts := []string{dim.Render(version), fmt.Sprintf("tx %d kbps", tx), fmt.Sprintf("rx %.0f kbps", rx),
+		fmt.Sprintf("ping %.0f ms", float64(rtt)/1000), fmt.Sprintf("jitter %.1f ms", float64(jit)/1000), "voice " + quality(bad),
+		dim.Render(fmt.Sprintf("drops %d (lost %d · stall %d · skip %d · rebuf %d)", lost+stall+skip+rebuf, lost, stall, skip, rebuf))}
 	if relayed > 0 {
-		s += sep + yellow.Render(fmt.Sprintf("%d via relay", relayed))
+		parts = append(parts, yellow.Render(fmt.Sprintf("%d via relay", relayed)))
 	}
-	return s
+	return strings.Join(parts, dim.Render(" · "))
 }
 
 func (m model) selfTile(w int) string {
@@ -781,20 +779,16 @@ func (m model) peerTile(p *peer, i, w int) string {
 		st = tileSelSt
 	}
 	status := yellow.Render(spinner[m.frame%len(spinner)] + " connecting")
-	if silent := p.silentFor(); p.connected() && silent > noReplyAfter {
-		status = red.Render(fmt.Sprintf("⚠ no reply %.0fs", silent.Seconds()))
-	} else if p.connected() {
-		path := "●"
-		if p.via.Load() != nil {
-			path = "◐"
-		}
+	if p.connected() {
+		path := map[bool]string{true: "◐", false: "●"}[p.via.Load() != nil]
 		status = green.Render(path) + " " + dim.Render(rttText(p))
-		if p.muted.Load() {
-			status = red.Render("muted") + " " + status
-		}
-		// They keep telling us whether our packets reach them; a fresh "no" means we talk into the void.
-		if at := p.stateAt.Load(); at != 0 && time.Since(time.Unix(0, at)) < noReplyAfter && !p.hearsUs.Load() {
+		switch at := p.stateAt.Load(); {
+		case p.silentFor() > noReplyAfter:
+			status = red.Render(fmt.Sprintf("⚠ no reply %.0fs", p.silentFor().Seconds()))
+		case at != 0 && time.Since(time.Unix(0, at)) < noReplyAfter && !p.hearsUs.Load(): // their fresh "no": we talk into the void
 			status = red.Render("⚠ can't hear you") + " " + status
+		case p.muted.Load():
+			status = red.Render("muted") + " " + status
 		}
 	}
 	v := m.views[p]
