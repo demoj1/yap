@@ -79,10 +79,9 @@ func (m model) knobs() []knob {
 	s := m.n.set
 	apply := func() {
 		s.save()
-		m.n.audio.setAEC(s.AECTail, s.AECSuppress, s.AECSuppressActive)
+		m.n.audio.setAEC(s.AECSuppress, s.AECSuppressActive)
 	}
 	return []knob{
-		{"echo tail", "ms", func() int { return s.AECTail }, func(v int) { s.AECTail = v; apply() }, 25, 100, 600},
 		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 5, -80, -10},
 		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 5, -50, -5},
 	}
@@ -417,8 +416,13 @@ func (m model) toggles() []toggle {
 		{"d", "denoise", ctl.denoise.Load, saved(&ctl.denoise, &set.Denoise, "denoise", nil), nil, false},
 		{"g", "gate", ctl.gate.Load, saved(&ctl.gate, &set.Gate, "noise gate", nil),
 			func() string { return map[bool]string{true: "open", false: "shut"}[n.gateOpen.Load()] }, false},
-		{"e", "echo", ctl.aec.Load, saved(&ctl.aec, &set.AEC, "echo cancel", func() { n.audio.aecOn.Store(ctl.aec.Load()) }),
-			func() string { return fmt.Sprintf("−%.0f dB", max(0, math.Float64frombits(n.audio.aecDB.Load()))) }, false},
+		{"e", "echo", ctl.aec.Load, saved(&ctl.aec, &set.Echo, "echo cancel", func() { n.audio.aecOn.Store(ctl.aec.Load()) }),
+			func() string {
+				if !n.audio.echoing.Load() {
+					return "no echo"
+				}
+				return fmt.Sprintf("−%.0f dB @ %d ms", max(0, math.Float64frombits(n.audio.aecDB.Load())), n.audio.echoLag.Load())
+			}, false},
 		{"a", "gain", ctl.agc.Load, saved(&ctl.agc, &set.AGC, "auto-gain", nil),
 			func() string { return fmt.Sprintf("×%.1f", math.Float64frombits(n.agcGain.Load())) }, false},
 		{"l", "lock", n.locked.Load, n.toggleLock, nil, false},

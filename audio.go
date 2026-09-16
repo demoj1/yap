@@ -94,10 +94,12 @@ type audio struct {
 	mu       sync.Mutex // guards a device swap against Close
 	mic, out string     // current device names, "" = system default
 
-	aecMu   sync.Mutex     // guards aec against a rebuild while onData runs it
-	aecTail int            // samples the current canceller was built with
-	aec     *aec.Canceller // echo canceller, fed in onData; nil until built
-	aecOn   atomic.Bool    // whether to run it
+	aecMu   sync.Mutex     // guards aec against a knob change while onData runs it
+	aec     *aec.Canceller // echo canceller, fed in onData
+	aecOn   atomic.Bool    // echo cancellation enabled (it only runs while echo is heard)
+	echo    echoTracker    // onData only
+	echoing atomic.Bool    // the tracker currently hears the speakers in the mic
+	echoLag atomic.Int32   // its delay estimate, ms, for the screen
 	aecDB   atomic.Uint64  // float64 bits: smoothed dB the canceller took out of the mic lately
 }
 
@@ -109,19 +111,87 @@ func sumSq(pcm []int16) float64 {
 	return s
 }
 
-// setAEC applies the echo canceller knobs: a new tail (ms) rebuilds the
-// adaptive filter (it re-converges in a second or two), suppression levels
-// take effect at once.
-func (a *audio) setAEC(tailMS, suppress, active int) {
+// setAEC applies the residual echo suppression knobs.
+func (a *audio) setAEC(suppress, active int) {
 	a.aecMu.Lock()
-	defer a.aecMu.Unlock()
-	if tail := sampleRate * tailMS / 1000; a.aec == nil || tail != a.aecTail {
-		if a.aec != nil {
-			a.aec.Close()
-		}
-		a.aec, a.aecTail = aec.New(frameSize/2, tail, sampleRate), tail
-	}
 	a.aec.SetSuppress(suppress, active)
+	a.aecMu.Unlock()
+}
+
+// Echo cancellation. The Speex canceller wants the sound the speakers play
+// handed to it just before its echo shows up in the mic — a long tail that
+// merely covers the delay adapts slowly and cancels poorly. So the played
+// frames are kept for half a second and a tracker keeps estimating, from
+// the correlation of the two loudness envelopes, how many frames later the
+// mic hears them; the canceller gets the frame from that far back and a
+// short tail. While the tracker hears no echo (headphones) it does not run.
+const (
+	aecTailMS  = 120  // about a third of a room's reverberation, per the Speex manual
+	echoMaxLag = 50   // frames (500 ms) of playback history the echo is searched in
+	echoHist   = 300  // frames (3 s) of envelopes an estimate is made over
+	echoLead   = 2    // frames: the reference is fed this much ahead of the estimated echo
+	echoEvery  = 100  // frames between estimates (1 s)
+	echoOn     = 0.55 // envelope correlation that means the mic hears the speakers
+	echoOff    = 0.30 // below this three estimates in a row, the echo is gone
+)
+
+type echoTracker struct {
+	played [echoMaxLag + 1][frameSize / 2]int16 // ring of played frames, newest at head
+	head   int
+	ep, em [echoHist]float32 // loudness (dB) of played / mic frames, ring by frame number
+	n      int               // frames seen
+	lag    int               // frames from playback to its echo in the mic
+	echo   bool              // the mic hears the speakers
+	quiet  int               // estimates in a row below echoOff
+}
+
+func loudness(pcm []int16) float32 { return float32(10 * math.Log10(sumSq(pcm)/float64(len(pcm))+1)) }
+
+// push records one callback's frames; true means an estimate is due.
+func (e *echoTracker) push(spk, mic []int16) bool {
+	e.head = (e.head + 1) % len(e.played)
+	copy(e.played[e.head][:], spk)
+	e.ep[e.n%echoHist], e.em[e.n%echoHist] = loudness(spk), loudness(mic)
+	e.n++
+	return e.n >= echoHist && e.n%echoEvery == 0
+}
+
+// estimate correlates the mic envelope with the played one at every lag and
+// decides whether there is echo and how late it is. True means the lag
+// changed and the canceller must adapt from scratch.
+func (e *echoTracker) estimate() bool {
+	const n = echoHist - echoMaxLag // frames compared per lag
+	bestLag, best := 0, 0.0
+	for lag := 0; lag <= echoMaxLag; lag++ {
+		var sx, sy, sxx, syy, sxy float64
+		for t := 0; t < n; t++ { // newest first; the played frame lag earlier
+			x, y := float64(e.ep[(e.n-1-t-lag)%echoHist]), float64(e.em[(e.n-1-t)%echoHist])
+			sx, sy, sxx, syy, sxy = sx+x, sy+y, sxx+x*x, syy+y*y, sxy+x*y
+		}
+		if den := math.Sqrt((sxx - sx*sx/n) * (syy - sy*sy/n)); den > 0 {
+			if r := (sxy - sx*sy/n) / den; r > best {
+				best, bestLag = r, lag
+			}
+		}
+	}
+	switch {
+	case best >= echoOn:
+		e.quiet = 0
+		changed := !e.echo || bestLag != e.lag
+		e.echo, e.lag = true, bestLag
+		return changed
+	case e.echo && best < echoOff:
+		if e.quiet++; e.quiet >= 3 {
+			e.echo = false
+		}
+	}
+	return false
+}
+
+// reference is the played frame the mic is about to echo, fed a little early.
+func (e *echoTracker) reference() []int16 {
+	back := max(0, e.lag-echoLead)
+	return e.played[(e.head-back+len(e.played))%len(e.played)][:]
 }
 
 // openAudio starts a full-duplex 48 kHz mono device. Captured 20 ms frames
@@ -132,10 +202,7 @@ func openAudio(micName, outName string) (*audio, error) {
 		return nil, err
 	}
 	a := &audio{ctx: ctx, frames: make(chan []int16, 8), play: newPCMQueue(), mic: micName, out: outName}
-	// 10 ms frames, 300 ms echo tail by default: the echo of what we hand to
-	// the device now comes back in the mic after output + input latency plus
-	// the room — 30–60 ms on a wired card, 150–250 ms on Bluetooth headsets.
-	a.setAEC(300, -60, -30)
+	a.aec = aec.New(frameSize/2, sampleRate*aecTailMS/1000, sampleRate) // 10 ms frames
 	if err := a.startDevice(); err != nil {
 		ctx.Uninit()
 		ctx.Free()
@@ -206,14 +273,23 @@ func (a *audio) onData(out, in []byte, count uint32) {
 	a.spkPeak.observe(spk)
 	mic := s16(in, count)
 	if a.aecOn.Load() && int(count) == frameSize/2 {
-		before := sumSq(mic)
-		a.aecMu.Lock()
-		a.aec.Process(mic, spk) // remove what the speakers are playing from the mic
-		a.aecMu.Unlock()
-		if before > 1e6 { // only meaningful when there was something to cancel
-			db := 10 * math.Log10(before/(sumSq(mic)+1))
-			prev := math.Float64frombits(a.aecDB.Load())
-			a.aecDB.Store(math.Float64bits(prev + (db-prev)*0.1))
+		if a.echo.push(spk, mic) && a.echo.estimate() {
+			a.aecMu.Lock()
+			a.aec.Reset() // the delay moved: adapt from scratch
+			a.aecMu.Unlock()
+		}
+		a.echoing.Store(a.echo.echo)
+		a.echoLag.Store(int32(a.echo.lag * frameMS / 2))
+		if a.echo.echo {
+			before := sumSq(mic)
+			a.aecMu.Lock()
+			a.aec.Process(mic, a.echo.reference()) // remove what the speakers played from the mic
+			a.aecMu.Unlock()
+			if before > 1e6 { // only meaningful when there was something to cancel
+				db := 10 * math.Log10(before/(sumSq(mic)+1))
+				prev := math.Float64frombits(a.aecDB.Load())
+				a.aecDB.Store(math.Float64bits(prev + (db-prev)*0.1))
+			}
 		}
 	}
 	a.micPeak.observe(mic)

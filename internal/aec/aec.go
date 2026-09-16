@@ -74,6 +74,9 @@ func (c *Canceller) Process(rec, play []int16) {
 	runtime.KeepAlive(c)
 }
 
+// Reset forgets the adapted filter, e.g. after the echo delay changed.
+func (c *Canceller) Reset() { C.speex_echo_state_reset(c.echo) }
+
 func (c *Canceller) Close() {
 	C.speex_preprocess_state_destroy(c.pre)
 	C.speex_echo_state_destroy(c.echo)

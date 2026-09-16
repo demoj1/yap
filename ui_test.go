@@ -4,14 +4,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/demoj1/yap/internal/aec"
 )
 
 // testModel is a screen over a node with no socket and no sound card: enough
 // to draw every frame and press every key.
 func testModel(t *testing.T) model {
-	set := &settings{path: filepath.Join(t.TempDir(), "settings.json"), Volumes: map[string]int{}, AECTail: 300, AECSuppress: -60, AECSuppressActive: -30}
+	set := &settings{path: filepath.Join(t.TempDir(), "settings.json"), Volumes: map[string]int{}, AECSuppress: -60, AECSuppressActive: -30}
 	n := newNode(newLink(), "me", &controls{}, set)
-	n.audio = &audio{}
+	n.audio = &audio{aec: aec.New(frameSize/2, sampleRate*aecTailMS/1000, sampleRate)}
 	n.rebuildRoster()
 	m := model{n: n, views: map[*peer]*view{}, cache: &panelCache{}, inputs: []string{"", "USB mic"}, outputs: []string{"", "Speakers"}}
 	return m

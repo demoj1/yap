@@ -81,7 +81,7 @@ func main() {
 	plain := fs.Bool("plain", false, "plain logs instead of the TUI")
 	nodenoise := fs.Bool("nodenoise", false, "start with RNNoise off")
 	nogate := fs.Bool("nogate", false, "start with the noise gate off")
-	aecOn := fs.Bool("aec", false, "enable acoustic echo cancellation (for speakers)")
+	noecho := fs.Bool("noecho", false, "start with echo cancellation off")
 	noagc := fs.Bool("noagc", false, "start with automatic gain control off")
 	mic := fs.String("mic", set.Mic, "microphone name or prefix (default: system default)")
 	out := fs.String("out", set.Out, "speaker name or prefix (default: system default)")
@@ -92,7 +92,7 @@ func main() {
 	ctl.bitrate.Store(int32(set.Bitrate))
 	ctl.denoise.Store(set.Denoise && !*nodenoise)
 	ctl.gate.Store(set.Gate && !*nogate)
-	ctl.aec.Store(set.AEC || *aecOn)
+	ctl.aec.Store(set.Echo && !*noecho)
 	ctl.agc.Store(set.AGC && !*noagc)
 	ctl.ptt.Store(set.PTT)
 
@@ -128,11 +128,8 @@ func main() {
 	host, _ := os.Hostname()
 	log.Printf("host %s · %s/%s · %s · %d cpu · name %q · config %s",
 		host, runtime.GOOS, runtime.GOARCH, runtime.Version(), runtime.NumCPU(), *name, filepath.Dir(set.path))
-	log.Printf("settings: bitrate %d · denoise %v · gate %v · mic %q · out %q · %d remembered volumes",
-		set.Bitrate, ctl.denoise.Load(), ctl.gate.Load(), set.Mic, set.Out, len(set.Volumes))
-	if ctl.aec.Load() {
-		log.Println("echo cancellation: on")
-	}
+	log.Printf("settings: bitrate %d · denoise %v · gate %v · echo %v · mic %q · out %q · %d remembered volumes",
+		set.Bitrate, ctl.denoise.Load(), ctl.gate.Load(), ctl.aec.Load(), set.Mic, set.Out, len(set.Volumes))
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: *port})
 	if err != nil {
@@ -157,7 +154,7 @@ func main() {
 	}
 	defer n.audio.Close()
 	n.audio.aecOn.Store(ctl.aec.Load())
-	n.audio.setAEC(set.AECTail, set.AECSuppress, set.AECSuppressActive)
+	n.audio.setAEC(set.AECSuppress, set.AECSuppressActive)
 	log.Println("audio:", n.audio.describe())
 	go func() { // never blocks startup; the TUI asks, the log keeps it
 		if tag := checkUpdate(); tag != "" {

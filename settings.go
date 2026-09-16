@@ -17,14 +17,12 @@ type settings struct {
 	Bitrate int            `json:"bitrate,omitempty"` // kbps
 	Denoise bool           `json:"denoise"`
 	Gate    bool           `json:"gate"`
-	AEC     bool           `json:"aec"`
+	Echo    bool           `json:"echo"` // echo cancellation; it only kicks in while the mic hears the speakers
 	AGC     bool           `json:"agc"`
 	PTT     bool           `json:"ptt"`               // push-to-talk: mic open only while space is held
 	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
 
-	// Echo canceller knobs, tuned from the TUI: filter tail in ms, residual
-	// suppression in dB while the far end is silent / while it speaks.
-	AECTail           int `json:"aec_tail,omitempty"`
+	// Residual echo suppression, dB, while the far end is silent / speaks.
 	AECSuppress       int `json:"aec_suppress,omitempty"`
 	AECSuppressActive int `json:"aec_suppress_active,omitempty"`
 }
@@ -41,7 +39,7 @@ func configDir() string {
 }
 
 func loadSettings() *settings {
-	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Volumes: map[string]int{}}
+	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Echo: true, Volumes: map[string]int{}}
 	s.path = filepath.Join(configDir(), "settings.json")
 	if raw, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(raw, s) // a corrupt file just falls back to defaults
@@ -51,9 +49,6 @@ func loadSettings() *settings {
 	}
 	if s.Bitrate == 0 {
 		s.Bitrate = 96
-	}
-	if s.AECTail == 0 {
-		s.AECTail = 300
 	}
 	if s.AECSuppress == 0 {
 		s.AECSuppress = -60
