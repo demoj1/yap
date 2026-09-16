@@ -264,8 +264,15 @@ func (n *node) onHello(h hello) bool {
 	n.rebuildRoster()
 	n.mu.Unlock()
 	log.Println(h.Name, "is at", h.Addrs)
+	stat("hello", map[string]any{"peer": h.Name, "ver": h.Ver, "relay": h.Relay, "addrs": len(h.Addrs)})
 	go n.punch(p, h.Addrs)
 	return true
+}
+
+// connected notes how a peer ended up reachable — directly, through a
+// relay, or not at all — and how long that took since their hello.
+func (n *node) connected(p *peer, how string) {
+	stat("connect", map[string]any{"peer": p.name, "how": how, "after_s": math.Round(time.Since(p.since).Seconds()*10) / 10})
 }
 
 // relayFor picks a directly connected peer to carry audio for p: a dedicated
@@ -333,6 +340,7 @@ func (n *node) punch(p *peer, cands []string) {
 			ready = nil
 			if p.direct() {
 				log.Println("connected:", p.name, p.addr.Load())
+				n.connected(p, "direct")
 				if p.relay {
 					n.adoptRelay(p)
 				}
@@ -340,6 +348,7 @@ func (n *node) punch(p *peer, cands []string) {
 			}
 			if via := p.via.Load(); via != nil && fresh {
 				log.Println("connected:", p.name, "via", via.name)
+				n.connected(p, "via")
 			}
 		case <-p.gone:
 			return
@@ -353,15 +362,18 @@ func (n *node) punch(p *peer, cands []string) {
 			if r := n.relayFor(p); r != nil {
 				p.via.Store(r)
 				log.Println("no direct path to", p.name, "— relaying via", r.name)
+				n.connected(p, "via")
 				return
 			}
 			// Nobody can relay yet; keep the peer so a relayed packet from
 			// their side can still land. expire() drops it if nothing comes.
 			log.Println("could not reach", p.name, "(symmetric NAT on one side?)")
+			n.connected(p, "none")
 			return
 		case <-tick.C:
 			if p.direct() { // their own packet landed while we were relaying
 				log.Println("connected:", p.name, p.addr.Load(), "— direct now")
+				n.connected(p, "direct")
 				return
 			}
 		}
@@ -690,6 +702,7 @@ func (n *node) reaper() {
 			switch {
 			case p.connected() && p.silentFor() > peerTimeout:
 				log.Println(p.name, "is gone")
+				stat("gone", peerStat(p))
 				n.drop(p)
 			case !p.connected() && time.Since(p.since) > neverConnectedTimeout:
 				log.Println("giving up on", p.name, "— will retry on their next hello")
@@ -699,11 +712,19 @@ func (n *node) reaper() {
 	}
 }
 
+// statsLoop logs a line per connected peer every statsEvery and records a
+// sample every statsSample.
 func (n *node) statsLoop() {
+	i := 0
 	for range time.Tick(statsEvery) {
+		i++
 		for _, p := range n.peerList() {
-			if p.connected() {
-				log.Println(p.stats(statsEvery))
+			if !p.connected() {
+				continue
+			}
+			log.Println(p.stats(statsEvery))
+			if i%int(statsSample/statsEvery) == 0 {
+				stat("peer", peerStat(p))
 			}
 		}
 	}

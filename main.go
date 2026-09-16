@@ -26,6 +26,7 @@ func usage() {
   yap relay [-p 4444] <link>      run as a headless relay hub (public, always-on box)
   yap devices                     list microphones and speakers
   yap reset                       forget saved devices/volumes, back to defaults
+  yap stats                       how connections went: per friend, direct/relayed, time to connect, drops
   yap update                      replace this binary with the latest release
 
   common flags: -name <shown to the friend>  -mic <name>  -out <name>
@@ -56,6 +57,10 @@ func main() {
 	}
 	if os.Args[1] == "devices" {
 		printDevices()
+		return
+	}
+	if os.Args[1] == "stats" {
+		printStats()
 		return
 	}
 	if os.Args[1] == "update" {
@@ -122,6 +127,8 @@ func main() {
 	n := newNode(l, *name, ctl, set)
 
 	logFile, logPath := openLog()
+	openStats()
+	stat("start", map[string]any{"ver": version, "name": *name, "os": runtime.GOOS + "/" + runtime.GOARCH, "mode": os.Args[1]})
 	defer logFile.Close()
 	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
 	log.Println("yap", version, "proto", proto, os.Args[1:])
