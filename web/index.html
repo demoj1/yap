@@ -349,7 +349,6 @@ $('pick').addEventListener('change', e => { upload([...e.target.files]); e.targe
 const codecs = { vp8: 'vp8', vp9: 'vp09.00.10.08' };
 let shareCfg = { codec: 'vp8', res: 1080, fps: 30, kbps: 15000 }; // the saved one arrives with the first snapshot
 let shareCfgSeen = '', shareCfgHold = 0; // hold: a snapshot older than our own change must not undo it
-let shareCfg = { codec: 'vp8', res: 1080, fps: 30, kbps: 15000 };
 try { Object.assign(shareCfg, JSON.parse(localStorage.share || '{}')); } catch (e) {}
 function shareSet(k, v) {
   shareCfg[k] = k === 'codec' ? v : +v;
