@@ -36,8 +36,12 @@ type node struct {
 	audio  *audio
 	talkMS atomic.Int64 // milliseconds of non-silent frames we sent: our talk time
 
-	gateOpen atomic.Bool   // the noise gate let the last frame through
-	agcGain  atomic.Uint64 // float64 bits: the gain AGC applied to the last frame
+	gateOpen atomic.Bool                 // the noise gate let the last frame through
+	agcGain  atomic.Uint64               // float64 bits: the gain AGC applied to the last frame
+	micDB    atomic.Uint64               // float64 bits: the last sampled mic level, for the meters
+	devices  atomic.Pointer[[2][]string] // input and output device names, refreshed by devicesLoop
+	web      *webServer                  // the browser UI (nil for a relay)
+	logs     *logRing                    // recent log lines for the browser
 	link     link
 	id       []byte // random per run; orders the pair direction bit
 	nonce    []byte // random per run; halves of every pair key
@@ -115,6 +119,8 @@ func (n *node) run() {
 	go n.reaper()
 	go n.statsLoop()
 	go n.pingLoop()
+	go n.levelLoop()
+	go n.devicesLoop()
 	n.rendezvous()
 }
 

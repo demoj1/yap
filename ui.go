@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,10 +38,7 @@ var (
 	hotSt  = lipgloss.NewStyle().Bold(true)
 )
 
-const (
-	devRefresh   = 150             // frames (~5 s) between device list refreshes
-	noReplyAfter = 3 * time.Second // a connected peer silent this long is flagged on its tile
-)
+const noReplyAfter = 3 * time.Second // a connected peer silent this long is flagged on its tile
 
 // copyToClipboard puts s on the clipboard every way that might work: OSC 52
 // through the terminal (wrapped for tmux, so it survives ssh), then the
@@ -65,34 +61,9 @@ func copyToClipboard(s string) {
 	}
 }
 
-// knob is one tunable number on the tuning tile.
-type knob struct {
-	name, unit   string
-	get          func() int
-	set          func(int)
-	step, lo, hi int
-}
-
-// knobs lists the echo canceller settings the tuning tile edits; every
-// change is saved and applied live.
-func (m model) knobs() []knob {
-	s := m.n.set
-	apply := func() {
-		s.save()
-		m.n.audio.setAEC(s.AECSuppress, s.AECSuppressActive)
-	}
-	return []knob{
-		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 5, -80, -10},
-		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 5, -50, -5},
-	}
-}
-
-// turn nudges the selected knob by dir steps within its range.
+// turn nudges the selected knob by dir steps.
 func (m model) turn(dir int) (tea.Model, tea.Cmd) {
-	k := m.knobs()[m.tune]
-	v := max(k.lo, min(k.hi, k.get()+dir*k.step))
-	k.set(v)
-	return m.note(fmt.Sprintf("%s %d %s", k.name, v, k.unit)), nil
+	return m.note(m.n.turnKnob(m.tune, dir)), nil
 }
 
 // hot renders word with its hotkey letter highlighted in place, so the key
@@ -136,12 +107,10 @@ type model struct {
 	cursor   int             // selected tile in the roster
 	width    int             // terminal columns, for the tile grid
 	height   int             // terminal rows: the log fills whatever the controls leave
-	inputs   []string        // device lists shown as tiles; refreshed every devRefresh frames
-	outputs  []string
-	tune     int         // selected row of the tuning tile
-	cache    *panelCache // device + tuning tiles, rebuilt only when they change
-	asked    bool        // the update dialog was answered (either way)
-	doUpdate bool        // the answer was yes: main updates and restarts after the TUI exits
+	tune     int             // selected row of the tuning tile
+	cache    *panelCache     // device + tuning tiles, rebuilt only when they change
+	asked    bool            // the update dialog was answered (either way)
+	doUpdate bool            // the answer was yes: main updates and restarts after the TUI exits
 	logs     []string
 	frame    int
 }
@@ -307,11 +276,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.frame++
-		if m.frame%devRefresh == 1 {
-			m.inputs, _ = m.n.deviceNames(malgo.Capture)
-			m.outputs, _ = m.n.deviceNames(malgo.Playback)
-		}
-		m.mic.feed(m.n.audio.micPeak.take(), m.frame)
+		m.mic.feed(math.Float64frombits(m.n.micDB.Load()), m.frame)
 		alive := map[*peer]bool{}
 		for _, p := range m.n.peerList() {
 			alive[p] = true
@@ -320,7 +285,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				v = &view{}
 				m.views[p] = v
 			}
-			v.meter.feed(p.level.take(), m.frame)
+			v.meter.feed(math.Float64frombits(p.levelDB.Load()), m.frame)
 			v.rate.feed(p.rxBytes.Load(), drops(p), time.Time(msg))
 			if !v.seen && !p.relay && p.connected() { // a person arrived
 				v.seen = true
@@ -356,8 +321,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-const volStep = 3 // percent per volume nudge
-
 // note flashes a line so every action has visible feedback.
 func (m model) note(s string) model { m.notice, m.noticeAt = s, m.frame; return m }
 
@@ -367,75 +330,15 @@ func (m model) nudgeVolume(dir int) (tea.Model, tea.Cmd) {
 	if m.cursor >= len(people) {
 		return m, nil
 	}
-	p := people[m.cursor]
-	v := max(0, min(200, int(p.volume.Load())+dir*volStep))
-	m.n.setVolume(p, v)
-	return m.note(fmt.Sprintf("%s volume %d%%", p.name, v)), nil
+	return m.note(m.n.nudgeVolume(people[m.cursor], dir)), nil
 }
 
-// nudgeBitrate moves our bitrate one notch and remembers it.
-func (m model) nudgeBitrate(dir int) (tea.Model, tea.Cmd) {
-	m.n.ctl.stepBitrate(dir)
-	m.n.set.Bitrate = int(m.n.ctl.bitrate.Load())
-	m.n.set.save()
-	return m.note(fmt.Sprintf("your bitrate %d kbps", m.n.set.Bitrate)), nil
-}
-
-// toggle is one on/off switch: its key, label, state, what flipping it does
-// (returning the notice), and a live reading shown while it is on.
-type toggle struct {
-	key, label string
-	on         func() bool
-	flip       func() string
-	live       func() string
-	offRed     bool // off is the alarming state (an open mic that is muted)
-}
-
-// toggles is the single list behind the chip row and the letter keys.
-func (m model) toggles() []toggle {
-	ctl, set, n := m.n.ctl, m.n.set, m.n
-	onOff := func(b bool) string { return map[bool]string{true: "on", false: "off"}[b] }
-	// saved flips a setting that is remembered across runs; after runs once it is applied.
-	saved := func(b *atomic.Bool, remembered *bool, name string, after func()) func() string {
-		return func() string {
-			b.Store(!b.Load())
-			*remembered = b.Load()
-			set.save()
-			if after != nil {
-				after()
-			}
-			return name + " " + onOff(b.Load())
-		}
-	}
-	return []toggle{
-		{"m", "mic", func() bool { return !ctl.muted.Load() }, func() string {
-			ctl.muted.Store(!ctl.muted.Load())
-			n.sendState()
-			return "mic " + map[bool]string{true: "MUTED", false: "on"}[ctl.muted.Load()]
-		}, nil, true},
-		{"d", "denoise", ctl.denoise.Load, saved(&ctl.denoise, &set.Denoise, "denoise", nil), nil, false},
-		{"g", "gate", ctl.gate.Load, saved(&ctl.gate, &set.Gate, "noise gate", nil),
-			func() string { return map[bool]string{true: "open", false: "shut"}[n.gateOpen.Load()] }, false},
-		{"e", "echo", ctl.aec.Load, saved(&ctl.aec, &set.Echo, "echo cancel", func() { n.audio.aecOn.Store(ctl.aec.Load()) }),
-			func() string {
-				if !n.audio.echoing.Load() {
-					return "no echo"
-				}
-				return fmt.Sprintf("−%.0f dB @ %d ms", max(0, math.Float64frombits(n.audio.aecDB.Load())), n.audio.echoLag.Load())
-			}, false},
-		{"a", "gain", ctl.agc.Load, saved(&ctl.agc, &set.AGC, "auto-gain", nil),
-			func() string { return fmt.Sprintf("×%.1f", math.Float64frombits(n.agcGain.Load())) }, false},
-		{"l", "lock", n.locked.Load, n.toggleLock, nil, false},
-		{"p", "ptt", ctl.ptt.Load, saved(&ctl.ptt, &set.PTT, "push-to-talk (hold space)", n.sendState), nil, false},
-	}
-}
+func (m model) nudgeBitrate(dir int) (tea.Model, tea.Cmd) { return m.note(m.n.nudgeBitrate(dir)), nil }
 
 // act performs one keyboard action; mouse events are translated into these.
 func (m model) act(key string) (tea.Model, tea.Cmd) {
-	for _, t := range m.toggles() {
-		if t.key == key {
-			return m.note(t.flip()), nil
-		}
+	if notice := m.n.press(key); notice != "" {
+		return m.note(notice), nil
 	}
 	switch key {
 	case "q", "ctrl+c":
@@ -474,7 +377,7 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 		copyToClipboard(m.n.link.String())
 		return m.note("link copied"), nil
 	case "tab":
-		m.tune = (m.tune + 1) % len(m.knobs())
+		m.tune = (m.tune + 1) % len(m.n.knobs())
 	case "[":
 		return m.turn(-1)
 	case "]":
@@ -493,12 +396,9 @@ func (m model) nextDevice(kind malgo.DeviceType) (tea.Model, tea.Cmd) {
 	return m.choose(kind, names[(cur+1)%len(names)])
 }
 
-// choose switches to a device and refreshes the tiles so the mark moves now.
+// choose switches to a device.
 func (m model) choose(kind malgo.DeviceType, name string) (tea.Model, tea.Cmd) {
-	m = m.note(m.n.useDevice(kind, name))
-	m.inputs, _ = m.n.deviceNames(malgo.Capture)
-	m.outputs, _ = m.n.deviceNames(malgo.Playback)
-	return m, nil
+	return m.note(m.n.useDevice(kind, name)), nil
 }
 
 // seg is a clickable text span on a known row: cells [x0,x1) trigger key
@@ -640,7 +540,7 @@ func (s *screen) controls() {
 		line += shown + strings.Repeat(" ", gap)
 		x += len([]rune(plain)) + gap
 	}
-	for _, t := range s.toggles() { // explicit ON/off so a keypress visibly flips one; live says what it is doing
+	for _, t := range s.n.toggles() { // explicit ON/off so a keypress visibly flips one; live says what it is doing
 		on := t.on()
 		sw, st := "○ off", dim
 		if on {
@@ -679,12 +579,13 @@ func (s *screen) controls() {
 // and rebuilt only when something in them changes; the click geometry is
 // kept relative to the block and shifted to wherever it lands this frame.
 func (s *screen) panels() {
-	knobs := s.knobs()
+	in, out := s.n.deviceLists()
+	knobs := s.n.knobs()
 	vals := make([]string, len(knobs))
 	for i, k := range knobs {
 		vals[i] = fmt.Sprint(k.get())
 	}
-	key := fmt.Sprintf("%d|%d|%s|%s|%s|%s|%s", s.width, s.tune, strings.Join(s.inputs, "\x00"), strings.Join(s.outputs, "\x00"),
+	key := fmt.Sprintf("%d|%d|%s|%s|%s|%s|%s", s.width, s.tune, strings.Join(in, "\x00"), strings.Join(out, "\x00"),
 		s.n.audio.mic, s.n.audio.out, strings.Join(vals, ","))
 	c := s.cache
 	if c.key != key {
@@ -836,6 +737,7 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	in, out := m.n.deviceLists()
 	if !wheel { // a device row?
 		for i, d := range g.dev {
 			row := e.Y - d.top - 2
@@ -843,9 +745,9 @@ func (m model) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 				continue
 			}
 			if i == 0 {
-				return m.choose(malgo.Capture, m.inputs[row])
+				return m.choose(malgo.Capture, in[row])
 			}
-			return m.choose(malgo.Playback, m.outputs[row])
+			return m.choose(malgo.Playback, out[row])
 		}
 	}
 	if i, ok := g.tileAt(e.X, e.Y); ok {
@@ -964,21 +866,22 @@ type panelCache struct {
 // build lays the panels out: device tiles side by side when they fit,
 // stacked on a narrow terminal, the tuning tile below.
 func (c *panelCache) build(m model, knobs []knob) {
+	inputs, outputs := m.n.deviceLists()
 	stack := m.width > 0 && m.width < 2*(tileMinW+2)+leftPad+1
 	dw := max(tileMinW, min(m.width/2-leftPad-1, 60))
 	if stack {
 		dw = max(tileMinW, min(m.width-leftPad-2, 60))
 	}
-	in := deviceTile(dw, "input", "i", m.inputs, m.n.audio.mic)
-	out := deviceTile(dw, "output", "o", m.outputs, m.n.audio.out)
+	in := deviceTile(dw, "input", "i", inputs, m.n.audio.mic)
+	out := deviceTile(dw, "output", "o", outputs, m.n.audio.out)
 	stride := lipgloss.Width(strings.SplitN(in, "\n", 2)[0])
-	c.dev[0] = devBox{0, leftPad, leftPad + stride, len(m.inputs)}
+	c.dev[0] = devBox{0, leftPad, leftPad + stride, len(inputs)}
 	var block string
 	if stack {
-		c.dev[1] = devBox{lipgloss.Height(in), leftPad, leftPad + stride, len(m.outputs)}
+		c.dev[1] = devBox{lipgloss.Height(in), leftPad, leftPad + stride, len(outputs)}
 		block = lipgloss.JoinVertical(lipgloss.Left, in, out)
 	} else {
-		c.dev[1] = devBox{0, leftPad + stride, leftPad + 2*stride, len(m.outputs)}
+		c.dev[1] = devBox{0, leftPad + stride, leftPad + 2*stride, len(outputs)}
 		block = lipgloss.JoinHorizontal(lipgloss.Top, in, out)
 	}
 	c.lines = strings.Split(lipgloss.NewStyle().PaddingLeft(leftPad).Render(block), "\n")

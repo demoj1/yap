@@ -162,6 +162,11 @@ func main() {
 	defer n.audio.Close()
 	n.audio.aecOn.Store(ctl.aec.Load())
 	n.audio.setAEC(set.AECSuppress, set.AECSuppressActive)
+	n.web, n.logs = &webServer{n: n}, &logRing{}
+	log.SetOutput(io.MultiWriter(os.Stderr, logFile, n.logs))
+	if set.Web {
+		n.web.start()
+	}
 	log.Println("audio:", n.audio.describe())
 	go func() { // never blocks startup; the TUI asks, the log keeps it
 		if tag := checkUpdate(); tag != "" {
@@ -183,7 +188,7 @@ func main() {
 		notice = "your link is in the clipboard — send it to friends, they run: yap join <link>"
 	}
 	ui := newUI(n, logPath, notice)
-	log.SetOutput(io.MultiWriter(logFile, ui))
+	log.SetOutput(io.MultiWriter(logFile, n.logs, ui))
 	go n.run()
 	wantUpdate, err := ui.Run()
 	if err != nil {

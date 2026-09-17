@@ -14,9 +14,10 @@ func testModel(t *testing.T) model {
 	set := &settings{path: filepath.Join(t.TempDir(), "settings.json"), Volumes: map[string]int{}, AECSuppress: -45, AECSuppressActive: -20}
 	n := newNode(newLink(), "me", &controls{}, set)
 	n.audio = &audio{aec: aec.New(frameSize/2, sampleRate*aecTailMS/1000, sampleRate)}
+	n.web = &webServer{n: n}
+	n.devices.Store(&[2][]string{{"", "USB mic"}, {"", "Speakers"}})
 	n.rebuildRoster()
-	m := model{n: n, views: map[*peer]*view{}, cache: &panelCache{}, inputs: []string{"", "USB mic"}, outputs: []string{"", "Speakers"}}
-	return m
+	return model{n: n, views: map[*peer]*view{}, cache: &panelCache{}}
 }
 
 // Every width must render without panicking and every line must fit.
@@ -45,7 +46,7 @@ func TestKeys(t *testing.T) {
 		mm, _ := m.act(key)
 		m = mm.(model)
 	}
-	for _, tg := range m.toggles() {
+	for _, tg := range m.n.toggles() {
 		before := tg.on()
 		m.act(tg.key)
 		if tg.on() == before && tg.key != "l" { // lock refuses with nobody in the room

@@ -107,6 +107,7 @@ type peer struct {
 	jb       *jitter
 	dec      *decoder
 	level    peak
+	levelDB  atomic.Uint64            // float64 bits: the last sampled level, for the meters
 	volume   atomic.Int32             // percent, applied in the mixer
 	joinedAt int64                    // roster order
 	since    time.Time                // when we learned of them; never-connected peers expire from this
