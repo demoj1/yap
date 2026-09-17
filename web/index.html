@@ -30,7 +30,7 @@
   #empty { color:var(--dim); padding:4px 0 }
   .cards { background:var(--card); border:1px solid var(--line) }
   .cards:empty { display:none }
-  .card { display:grid; grid-template-columns:24px minmax(90px,150px) 1fr 40px 170px; column-gap:6px; padding:2px 4px; align-items:center; border-bottom:1px solid var(--line); min-height:28px }
+  .card { display:grid; grid-template-columns:24px auto auto 40px 170px; column-gap:6px; padding:2px 4px; align-items:center; border-bottom:1px solid var(--line); min-height:28px }
   .card:last-child { border-bottom:0 }
   .card.speaking { box-shadow:inset 3px 0 var(--green) }
   .avatar { width:24px; height:24px; background:var(--card2); display:grid; place-items:center; font-weight:700; color:var(--blue); box-shadow:0 0 0 0 var(--ring) }
@@ -64,7 +64,7 @@
   #toast { position:fixed; left:50%; top:28px; transform:translateX(-50%); z-index:6; background:var(--card2); border:1px solid var(--line); padding:2px 8px; color:var(--yellow); opacity:0; transition:opacity .15s; pointer-events:none }
   #toast.show { opacity:1 }
 
-  .room { display:grid; grid-template-columns:1fr minmax(280px,380px); gap:4px }
+  .room { display:grid; grid-template-columns:fit-content(60%) minmax(280px,1fr); gap:4px }
   #chat { background:var(--card); border:1px solid var(--line); display:flex; flex-direction:column; min-height:0 }
   @media (max-width:700px) { .room { grid-template-columns:1fr; grid-template-rows:auto minmax(120px,1fr) } }
   #msgs { flex:1; overflow:auto; padding:3px 5px; display:flex; flex-direction:column; gap:0 }
