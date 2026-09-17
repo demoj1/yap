@@ -359,7 +359,14 @@ func (m model) typeKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // act performs one keyboard action; mouse events are translated into these.
+// cyrillic maps the ЙЦУКЕН key under each hot letter, so the keys work
+// without switching the layout.
+var cyrillic = map[string]string{"ь": "m", "в": "d", "п": "g", "у": "e", "ф": "a", "д": "l", "з": "p", "ц": "w", "ы": "s", "м": "v", "е": "t", "с": "c", "й": "q", "н": "y", "т": "n"}
+
 func (m model) act(key string) (tea.Model, tea.Cmd) {
+	if k, ok := cyrillic[key]; ok {
+		key = k
+	}
 	if notice := m.n.press(key); notice != "" {
 		return m.note(notice), nil
 	}

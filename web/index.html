@@ -492,10 +492,12 @@ function joinRoom(id) {
 document.querySelectorAll('#joinlink, #joinlink2').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(i.id); }));
 document.addEventListener('keydown', e => {
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) { if (e.key === 'Escape') e.target.blur(); return; }
-  if (e.key === ' ') { act({ Key: ' ' }); e.preventDefault(); }
-  else if (/^[mdgealpws]$/.test(e.key)) act({ Key: e.key });
-  else if (e.key === 'v') toggleShare();
-  else if (e.key === 't' || e.key === 'Enter') { say.focus(); e.preventDefault(); }
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+  const k = /^Key[A-Z]$/.test(e.code) ? e.code[3].toLowerCase() : e.key; // the physical key: any layout works
+  if (k === ' ') { act({ Key: ' ' }); e.preventDefault(); }
+  else if (/^[mdgealpws]$/.test(k)) act({ Key: k });
+  else if (k === 'v') toggleShare();
+  else if (k === 't' || e.key === 'Enter') { say.focus(); e.preventDefault(); }
   else if (e.key === 'Escape') { drawer.classList.remove('open'); $('zoom').classList.remove('show'); }
 });
 </script>
