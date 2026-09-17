@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/demoj1/yap/internal/aec"
 )
 
@@ -79,4 +80,28 @@ func visibleWidth(s string) int {
 		i++
 	}
 	return n
+}
+
+// Typing: t opens the line, runes fill it, enter says it, and what we said
+// is the last thing in the chat.
+func TestChatLine(t *testing.T) {
+	m := testModel(t)
+	mm, _ := m.act("t")
+	m = mm.(model)
+	if !m.typing {
+		t.Fatal("t must open the chat line")
+	}
+	for _, r := range "hi all" {
+		mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = mm.(model)
+	}
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(model)
+	if m.typing || m.input != "" {
+		t.Fatal("enter must send and close the line")
+	}
+	last := m.n.chat.tail(1)
+	if len(last) != 1 || last[0].From != "me" || last[0].Text != "hi all" {
+		t.Fatalf("chat has %+v", last)
+	}
 }

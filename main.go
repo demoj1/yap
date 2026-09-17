@@ -171,7 +171,7 @@ func main() {
 	go func() { // never blocks startup; the TUI asks, the log keeps it
 		if tag := checkUpdate(); tag != "" {
 			n.update.Store(&tag)
-			log.Printf("update available: %s (you run %s) — yap update", tag, version)
+			n.system("update available: %s (you run %s) — yap update", tag, version)
 		}
 	}()
 	log.Printf("buffers: jitter %d–%d frames (%d–%d ms) · playback %d frames · peer timeout %s",
@@ -186,9 +186,10 @@ func main() {
 	if os.Args[1] == "listen" { // the host's link is what friends need: hand it over right away
 		copyToClipboard(n.link.String())
 		notice = "your link is in the clipboard — send it to friends, they run: yap join <link>"
+		n.system("%s", notice)
 	}
 	ui := newUI(n, logPath, notice)
-	log.SetOutput(io.MultiWriter(logFile, n.logs, ui))
+	log.SetOutput(io.MultiWriter(logFile, n.logs))
 	go n.run()
 	wantUpdate, err := ui.Run()
 	if err != nil {

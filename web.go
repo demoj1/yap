@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"net"
 	"net/http"
@@ -69,7 +68,7 @@ func (w *webServer) start() string {
 	mux.HandleFunc("/act", w.act)
 	w.ln, w.srv = ln, &http.Server{Handler: mux}
 	go w.srv.Serve(ln)
-	log.Println("web UI at http://" + ln.Addr().String())
+	w.n.system("web UI at http://%s", ln.Addr())
 	return "web on — http://" + ln.Addr().String()
 }
 
@@ -114,6 +113,7 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 		Device  *struct{ Kind, Name string }
 		Knob    *struct{ I, Dir int }
 		Bitrate int
+		Chat    string
 	}
 	if r.Method != "POST" || json.NewDecoder(r.Body).Decode(&a) != nil {
 		http.Error(rw, "bad request", 400)
@@ -140,6 +140,8 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 		notice = n.turnKnob(a.Knob.I, a.Knob.Dir)
 	case a.Bitrate != 0:
 		notice = n.nudgeBitrate(a.Bitrate)
+	case a.Chat != "":
+		n.say(strings.TrimSpace(a.Chat))
 	}
 	json.NewEncoder(rw).Encode(map[string]string{"notice": notice})
 }
@@ -165,6 +167,13 @@ type snapshot struct {
 	Mic, Out                    string
 	Bitrate                     int32
 	Logs                        []string
+	Chat                        []chatJSON
+}
+
+type chatJSON struct {
+	At   int64 // unix ms
+	From string
+	Text string
 }
 
 type selfJSON struct {
@@ -245,6 +254,9 @@ func (n *node) snapshot() snapshot {
 	s.Inputs, s.Outputs = n.deviceLists()
 	if n.logs != nil {
 		s.Logs = n.logs.tail(40)
+	}
+	for _, c := range n.chat.tail(100) {
+		s.Chat = append(s.Chat, chatJSON{c.At.UnixMilli(), c.From, c.Text})
 	}
 	return s
 }

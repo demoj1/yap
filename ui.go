@@ -22,7 +22,6 @@ const (
 
 type (
 	tickMsg   time.Time
-	logMsg    string
 	noticeMsg string
 )
 
@@ -92,10 +91,9 @@ func rttText(p *peer) string {
 }
 
 // ui is the bubbletea front end. The node does not push state into it: on
-// every tick the model reads the roster and levels straight from the node.
+// every tick the model reads the roster, levels and chat straight from it.
 type ui struct {
 	prog *tea.Program
-	logs chan string // log lines on their way to the screen
 }
 
 type model struct {
@@ -112,7 +110,8 @@ type model struct {
 	cache    *panelCache     // device + tuning tiles, rebuilt only when they change
 	asked    bool            // the update dialog was answered (either way)
 	doUpdate bool            // the answer was yes: main updates and restarts after the TUI exits
-	logs     []string
+	typing   bool            // keys go to the chat line, not the switches
+	input    string          // the chat line being typed
 	frame    int
 }
 
@@ -244,15 +243,10 @@ func (m meter) bar(n int) string {
 
 // newUI builds the screen; notice, if any, is shown for the first ~10 s.
 func newUI(n *node, logPath, notice string) *ui {
-	u := &ui{logs: make(chan string, 256)}
+	u := &ui{}
 	m := model{n: n, logPath: logPath, views: map[*peer]*view{}, cache: &panelCache{},
 		notice: notice, noticeAt: 200} // a notice lives 60 frames past noticeAt: this one for ~13 s
 	u.prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-	go func() { // Send blocks until the event loop takes the message: never do it from the loop itself
-		for line := range u.logs {
-			u.prog.Send(logMsg(line))
-		}
-	}()
 	return u
 }
 
@@ -263,22 +257,6 @@ func (u *ui) Run() (bool, error) {
 		return false, err
 	}
 	return final.(model).doUpdate, nil
-}
-
-// Write feeds log lines to the screen. The periodic per-peer stats stay in
-// the file only: the status bar and tiles show them live, and on screen
-// they would bury the events that matter (who joined, how, who left). A key
-// handler that logs (lock, web) runs inside the event loop, so the line is
-// handed to a goroutine rather than sent from here; a flood is dropped.
-func (u *ui) Write(p []byte) (int, error) {
-	line := strings.TrimRight(string(p), "\n")
-	if !strings.Contains(line, ": tx ") {
-		select {
-		case u.logs <- line:
-		default:
-		}
-	}
-	return len(p), nil
 }
 
 func (m model) Init() tea.Cmd { return tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) }) }
@@ -315,16 +293,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = max(0, np-1)
 		}
 		return m, tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) })
-	case logMsg:
-		m.logs = append(m.logs, string(msg))
-		if len(m.logs) > logKeep {
-			m.logs = m.logs[len(m.logs)-logKeep:]
-		}
 	case noticeMsg:
 		m.notice, m.noticeAt = string(msg), m.frame
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
+		if m.typing {
+			return m.typeKey(msg)
+		}
 		return m.act(msg.String())
 	case tea.MouseMsg:
 		return m.mouse(msg)
@@ -345,6 +321,26 @@ func (m model) nudgeVolume(dir int) (tea.Model, tea.Cmd) {
 }
 
 func (m model) nudgeBitrate(dir int) (tea.Model, tea.Cmd) { return m.note(m.n.nudgeBitrate(dir)), nil }
+
+// typeKey edits the chat line: enter sends, esc drops it, the rest types.
+func (m model) typeKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.typing, m.input = false, ""
+	case tea.KeyEnter:
+		m.n.say(strings.TrimSpace(m.input))
+		m.typing, m.input = false, ""
+	case tea.KeyBackspace:
+		if r := []rune(m.input); len(r) > 0 {
+			m.input = string(r[:len(r)-1])
+		}
+	case tea.KeyRunes, tea.KeySpace:
+		m.input += k.String()
+	}
+	return m, nil
+}
 
 // act performs one keyboard action; mouse events are translated into these.
 func (m model) act(key string) (tea.Model, tea.Cmd) {
@@ -387,6 +383,8 @@ func (m model) act(key string) (tea.Model, tea.Cmd) {
 	case "c":
 		copyToClipboard(m.n.link.String())
 		return m.note("link copied"), nil
+	case "t", "enter":
+		m.typing = true
 	case "tab":
 		m.tune = (m.tune + 1) % len(m.n.knobs())
 	case "[":
@@ -580,6 +578,7 @@ func (s *screen) controls() {
 	action("", "input", "i", "")
 	action("", "output", "o", "")
 	action("", "copy", "c", "")
+	action("", "chat", "t", "")
 	action("", "quit", "q", "")
 	flush()
 	s.add("")
@@ -611,25 +610,30 @@ func (s *screen) panels() {
 	s.g.tune.top += top
 }
 
-// bottom is the notice, then the log filling every row left, newest last,
-// with the file path as the last line.
+// bottom is the notice, then the chat filling every row left, newest last,
+// the line being typed, and the log path as the last line.
 func (s *screen) bottom() {
 	if s.notice != "" && s.frame-s.noticeAt < 60 {
 		s.clipped("  " + yellow.Render("▸ "+s.notice))
 	} else {
 		s.add("")
 	}
-	show := 3
+	show := 5
 	if s.height > 0 {
-		show = max(0, s.height-len(s.lines)-1)
+		show = max(0, s.height-len(s.lines)-2)
 	}
-	for _, l := range s.logs[max(0, len(s.logs)-show):] {
-		if s.width > leftPad+8 {
-			l = trunc(l, s.width-leftPad)
+	for _, c := range s.n.chat.tail(show) {
+		who, text := dim.Render("system"), dim.Render(c.Text)
+		if c.From != "" {
+			who, text = bold.Render(c.From), c.Text
 		}
-		s.add("  " + dim.Render(l))
+		s.clipped("  " + dim.Render(c.At.Format("15:04")) + " " + who + " " + text)
 	}
-	s.add("  " + dim.Render("full log: "+s.logPath))
+	if s.typing {
+		s.clipped("  " + keySt.Render("> ") + s.input + selSt.Render("▏"))
+	} else {
+		s.add("  " + dim.Render("t to chat · full log: "+s.logPath))
+	}
 }
 
 // statusBar sums the call up in one line: what we send, what comes in, the

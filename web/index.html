@@ -58,6 +58,17 @@
   #log { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim); white-space:pre-wrap; max-height:32vh; overflow:auto }
   #toast { position:fixed; left:50%; bottom:104px; transform:translateX(-50%); background:var(--card2); border:1px solid var(--line); border-radius:999px; padding:6px 14px; color:var(--yellow); opacity:0; transition:opacity .2s; pointer-events:none }
   #toast.show { opacity:1 }
+
+  .room { display:grid; grid-template-columns:1fr minmax(280px,360px); gap:18px; align-items:start }
+  @media (max-width:760px) { .room { grid-template-columns:1fr } }
+  #chat { background:var(--card); border:1px solid var(--line); border-radius:16px; display:flex; flex-direction:column; height:min(70vh,640px) }
+  #msgs { flex:1; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:6px }
+  .msg { font-size:14px; line-height:1.4; white-space:pre-wrap; word-break:break-word }
+  .msg .t { color:var(--dim); font-size:11px; margin-right:6px } .msg .w { font-weight:600; margin-right:6px } .msg.me .w { color:var(--green) }
+  .msg.sys { color:var(--dim) } .msg.sys .w { font-weight:400; font-style:italic }
+  #compose { border-top:1px solid var(--line); padding:10px 12px }
+  #compose textarea { width:100%; resize:none; background:var(--card2); color:var(--fg); border:1px solid var(--line); border-radius:10px; padding:8px 10px; font:inherit; min-height:40px; max-height:120px }
+  #compose small { color:var(--dim) }
 </style>
 </head>
 <body>
@@ -70,9 +81,15 @@
   <button id="gear" title="settings" onclick="drawer.classList.toggle('open')">⚙</button>
 </header>
 <div id="update"><div id="updateText"></div></div>
-<main>
-  <div id="empty">nobody here yet — send them the link</div>
-  <div class="cards" id="cards"></div>
+<main class="room">
+  <div>
+    <div id="empty">nobody here yet — send them the link</div>
+    <div class="cards" id="cards"></div>
+  </div>
+  <div id="chat">
+    <div id="msgs"></div>
+    <div id="compose"><textarea id="say" rows="1" placeholder="say something…"></textarea><small>enter sends · shift+enter new line</small></div>
+  </div>
 </main>
 <div id="bar"><div class="in" id="ctls"></div></div>
 <div id="toast"></div>
@@ -202,15 +219,44 @@ function render(s) {
     $('knobs').innerHTML = s.Knobs.map((k, i) => `<div class="row"><span>${esc(k.Name)}</span><span><button onclick="act({Knob:{I:${i},Dir:-1}})">−</button> ${k.Value} ${k.Unit} <button onclick="act({Knob:{I:${i},Dir:1}})">+</button></span></div>`).join('');
   }
   $('log').textContent = (s.Logs || []).join('\n');
+  renderChat(s);
 }
+
+// chat: re-rendered only when a message arrives; unread ones count in the tab title
+let chatKey = '', unread = 0;
+function renderChat(s) {
+  const msgs = s.Chat || [], key = msgs.length ? msgs.length + ':' + msgs[msgs.length - 1].At : '0';
+  if (key === chatKey) return;
+  const grew = chatKey !== '' && msgs.length && msgs[msgs.length - 1].From && msgs[msgs.length - 1].From !== s.Name;
+  chatKey = key;
+  const box = $('msgs'), stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = msgs.map(m => {
+    const t = new Date(m.At).toTimeString().slice(0, 5);
+    return `<div class="msg ${m.From ? (m.From === s.Name ? 'me' : '') : 'sys'}"><span class="t">${t}</span><span class="w">${esc(m.From || 'system')}</span>${esc(m.Text)}</div>`;
+  }).join('');
+  if (stick) box.scrollTop = box.scrollHeight;
+  if (grew && document.hidden) { unread++; document.title = `(${unread}) yap`; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { unread = 0; document.title = 'yap'; } });
+const say = $('say');
+say.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { // shift+enter is a new line
+    e.preventDefault();
+    const text = say.value.trim();
+    if (text) act({ Chat: text });
+    say.value = ''; say.style.height = '';
+  }
+});
+say.addEventListener('input', () => { say.style.height = ''; say.style.height = Math.min(120, say.scrollHeight) + 'px'; });
 const drawer = $('drawer');
 const es = new EventSource('/events');
 es.onmessage = e => render(JSON.parse(e.data));
 es.onerror = () => { $('qtext').textContent = 'yap is not running'; $('quality').querySelector('i').className = 'poor'; };
 document.addEventListener('keydown', e => {
-  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === ' ') { act({ Key: ' ' }); e.preventDefault(); }
   else if (/^[mdgealpw]$/.test(e.key)) act({ Key: e.key });
+  else if (e.key === 't' || e.key === 'Enter') { say.focus(); e.preventDefault(); }
   else if (e.key === 'Escape') drawer.classList.remove('open');
 });
 </script>

@@ -42,6 +42,8 @@ type node struct {
 	devices  atomic.Pointer[[2][]string] // input and output device names, refreshed by devicesLoop
 	web      *webServer                  // the browser UI (nil for a relay)
 	logs     *logRing                    // recent log lines for the browser
+	chat     chat                        // what people wrote and what happened
+	chatSeq  atomic.Uint32               // id of our last chat message
 	link     link
 	id       []byte // random per run; orders the pair direction bit
 	nonce    []byte // random per run; halves of every pair key
@@ -227,7 +229,7 @@ func (n *node) onHello(h hello) bool {
 		if who == "" {
 			who = "someone"
 		}
-		log.Printf("%s runs an incompatible yap (proto %d, need %d) — ask them to update", who, h.Proto, proto)
+		n.system("%s runs an incompatible yap (proto %d, need %d) — ask them to update", who, h.Proto, proto)
 		return false
 	}
 	if n.locked.Load() && !h.Relay { // relays only forward; a lock is about people
@@ -256,7 +258,7 @@ func (n *node) onHello(h hello) bool {
 	// time order and the living re-announce, so the latest hello wins.
 	for _, q := range n.peers {
 		if q.name == h.Name {
-			log.Println(h.Name, "restarted")
+			n.system("%s restarted", h.Name)
 			n.dropLocked(q)
 		}
 	}
@@ -345,7 +347,7 @@ func (n *node) punch(p *peer, cands []string) {
 		case <-ready:
 			ready = nil
 			if p.direct() {
-				log.Println("connected:", p.name, p.addr.Load())
+				n.system("connected: %s %s", p.name, p.addr.Load())
 				n.connected(p, "direct")
 				if p.relay {
 					n.adoptRelay(p)
@@ -353,7 +355,7 @@ func (n *node) punch(p *peer, cands []string) {
 				return
 			}
 			if via := p.via.Load(); via != nil && fresh {
-				log.Println("connected:", p.name, "via", via.name)
+				n.system("connected: %s via %s", p.name, via.name)
 				n.connected(p, "via")
 			}
 		case <-p.gone:
@@ -361,24 +363,24 @@ func (n *node) punch(p *peer, cands []string) {
 		case <-deadline:
 			if via := p.via.Load(); via != nil {
 				if fresh {
-					log.Println("no direct path to", p.name, "— staying via", via.name)
+					n.system("no direct path to %s — staying via %s", p.name, via.name)
 				}
 				return
 			}
 			if r := n.relayFor(p); r != nil {
 				p.via.Store(r)
-				log.Println("no direct path to", p.name, "— relaying via", r.name)
+				n.system("no direct path to %s — relaying via %s", p.name, r.name)
 				n.connected(p, "via")
 				return
 			}
 			// Nobody can relay yet; keep the peer so a relayed packet from
 			// their side can still land. expire() drops it if nothing comes.
-			log.Println("could not reach", p.name, "(symmetric NAT on one side?)")
+			n.system("could not reach %s (symmetric NAT on one side?)", p.name)
 			n.connected(p, "none")
 			return
 		case <-tick.C:
 			if p.direct() { // their own packet landed while we were relaying
-				log.Println("connected:", p.name, p.addr.Load(), "— direct now")
+				n.system("connected: %s %s — direct now", p.name, p.addr.Load())
 				n.connected(p, "direct")
 				return
 			}
@@ -420,7 +422,7 @@ func (n *node) dropLocked(p *peer) {
 		r := n.relayFor(q) // roster is already without p
 		q.via.Store(r)     // nil: the next hello re-punches
 		if r != nil {
-			log.Println(p.name, "is gone — now relaying to", q.name, "via", r.name)
+			n.system("%s is gone — now relaying to %s via %s", p.name, q.name, r.name)
 		}
 	}
 	p.markGone()
@@ -535,6 +537,9 @@ func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 		if ts, ok := parseStamp(plain); ok {
 			p.gotPong(ts)
 		}
+	case typChat:
+		p.accept(from, 0, nil)
+		n.heard(p, plain)
 	case typState:
 		p.accept(from, 0, nil)
 		if len(plain) >= 2 {
@@ -707,7 +712,7 @@ func (n *node) reaper() {
 		for _, p := range n.peerList() {
 			switch {
 			case p.connected() && p.silentFor() > peerTimeout:
-				log.Println(p.name, "is gone")
+				n.system("%s is gone", p.name)
 				stat("gone", peerStat(p))
 				n.drop(p)
 			case !p.connected() && time.Since(p.since) > neverConnectedTimeout:
@@ -762,7 +767,7 @@ func (n *node) toggleLock() string {
 	if n.locked.Load() {
 		n.locked.Store(false)
 		n.allowed.Store(nil)
-		log.Println("room unlocked")
+		n.system("room unlocked")
 		return "room unlocked — anyone with the link can join"
 	}
 	allowed := map[string]bool{n.name: true}
@@ -774,7 +779,7 @@ func (n *node) toggleLock() string {
 	}
 	n.allowed.Store(&allowed)
 	n.locked.Store(true)
-	log.Printf("room locked with %d participant(s)", len(allowed))
+	n.system("room locked with %d participant(s)", len(allowed))
 	return fmt.Sprintf("room LOCKED — %d here, no one new gets in", len(allowed))
 }
 
