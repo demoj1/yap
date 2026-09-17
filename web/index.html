@@ -207,9 +207,9 @@ let ctlKey = '', drawerKey = '';
 let themeSeen = '';
 function render(s) {
   if (s.Theme !== themeSeen) { themeSeen = s.Theme; if (s.Theme) { applyTheme(s.Theme); try { localStorage.theme = s.Theme; } catch (e) {} } }
-  if (Date.now() > shareCfgHold && JSON.stringify(s.ShareCfg) !== shareCfgSeen) { // saved settings (from any browser) into the selects
+  if (s.ShareCfg && s.ShareCfg.codec && Date.now() > shareCfgHold && JSON.stringify(s.ShareCfg) !== shareCfgSeen) { // saved settings (from any browser) into the selects
     shareCfgSeen = JSON.stringify(s.ShareCfg);
-    shareCfg = { codec: s.ShareCfg.Codec, res: s.ShareCfg.Res, fps: s.ShareCfg.FPS, kbps: s.ShareCfg.Kbps };
+    shareCfg = { ...s.ShareCfg }; // the same lower-case keys on both sides
     for (const k of ['codec', 'res', 'fps', 'kbps']) $('sh-' + k).value = shareCfg[k];
   }
   $('link').textContent = s.Link;
@@ -353,7 +353,7 @@ try { Object.assign(shareCfg, JSON.parse(localStorage.share || '{}')); } catch (
 function shareSet(k, v) {
   shareCfg[k] = k === 'codec' ? v : +v;
   shareCfgHold = Date.now() + 1000;
-  act({ ShareCfg: { Codec: shareCfg.codec, Res: shareCfg.res, FPS: shareCfg.fps, Kbps: shareCfg.kbps } });
+  act({ ShareCfg: shareCfg });
   if (!share) return;
   if (k === 'res') share.stream.getVideoTracks()[0].applyConstraints(shareSize()).catch(() => {});
   if (k === 'fps' && share.retick) share.retick();
