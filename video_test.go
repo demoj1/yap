@@ -57,8 +57,8 @@ func TestVideoReassemblesInOrder(t *testing.T) {
 	}
 	for id := uint32(2); id <= 4; id++ {
 		f := <-rx.out
-		if f.id != id || string(f.data) != string(frame(int(id))) || f.key != (id == 2) {
-			t.Fatalf("frame %d: id %d key %v len %d", id, f.id, f.key, len(f.data))
+		if f.id != id || string(f.data) != string(frame(int(id))) || (f.flags&videoFlagKey != 0) != (id == 2) {
+			t.Fatalf("frame %d: id %d flags %d len %d", id, f.id, f.flags, len(f.data))
 		}
 	}
 }
@@ -99,8 +99,8 @@ func TestVideoRecoversAtKeyFrame(t *testing.T) {
 		t.Fatalf("got %d frames, want 2: the first key and the recovery key", len(rx.out))
 	}
 	<-rx.out
-	if f := <-rx.out; f.id != 5 || !f.key {
-		t.Fatalf("recovered on frame %d key=%v, want 5 key", f.id, f.key)
+	if f := <-rx.out; f.id != 5 || f.flags&videoFlagKey == 0 {
+		t.Fatalf("recovered on frame %d flags=%d, want 5 key", f.id, f.flags)
 	}
 }
 

@@ -49,9 +49,9 @@ func (n *node) watchers() int {
 }
 
 type videoFrame struct {
-	id   uint32
-	key  bool
-	data []byte
+	id    uint32
+	flags byte // videoFlagKey, codec in bits 2-3 (0 VP8, 1 VP9): the viewer sets its decoder from a key frame
+	data  []byte
 }
 
 // videoRx puts one sender's frames back together and hands them out in order.
@@ -65,7 +65,7 @@ type videoRx struct {
 }
 
 type videoPartial struct {
-	key    bool
+	flags  byte
 	chunks [][]byte
 	got    int
 	since  time.Time
@@ -77,14 +77,14 @@ func newVideoRx() *videoRx {
 
 // sendVideo queues one encoded frame for everyone; frames it cannot keep
 // up with are dropped rather than delayed.
-func (n *node) sendVideo(data []byte, key bool) {
+func (n *node) sendVideo(data []byte, flags byte) {
 	n.videoMu.Lock()
 	if n.videoOut == nil {
 		n.videoOut = make(chan videoFrame, videoQueue)
 		go n.videoSender()
 	}
 	n.videoSeq++
-	f := videoFrame{n.videoSeq, key, data}
+	f := videoFrame{n.videoSeq, flags, data}
 	n.videoMu.Unlock()
 	select {
 	case n.videoOut <- f:
@@ -106,11 +106,7 @@ func (n *node) videoSender() {
 			pkt = binary.BigEndian.AppendUint32(pkt, f.id)
 			pkt = binary.BigEndian.AppendUint16(pkt, uint16(c))
 			pkt = binary.BigEndian.AppendUint16(pkt, uint16(chunks))
-			flags := byte(0)
-			if f.key {
-				flags = videoFlagKey
-			}
-			pkt = append(pkt, flags)
+			pkt = append(pkt, f.flags)
 			pkt = append(pkt, f.data[c*videoChunk:min(len(f.data), (c+1)*videoChunk)]...)
 			for _, p := range n.people() {
 				if p.connected() && p.watchingNow() {
@@ -154,7 +150,7 @@ func (n *node) gotVideo(p *peer, plain []byte) {
 	}
 	part := rx.pending[id]
 	if part == nil {
-		part = &videoPartial{key: plain[9]&videoFlagKey != 0, chunks: make([][]byte, chunks), since: time.Now()}
+		part = &videoPartial{flags: plain[9], chunks: make([][]byte, chunks), since: time.Now()}
 		rx.pending[id] = part
 	}
 	if chunk >= len(part.chunks) || part.chunks[chunk] != nil {
@@ -172,7 +168,7 @@ func (rx *videoRx) deliver(n *node, p *peer) {
 	for {
 		if !rx.synced { // start on any complete key frame
 			for id, part := range rx.pending {
-				if part.key && part.got == len(part.chunks) {
+				if part.key() && part.got == len(part.chunks) {
 					rx.synced, rx.next = true, id
 					break
 				}
@@ -190,7 +186,7 @@ func (rx *videoRx) deliver(n *node, p *peer) {
 			}
 			delete(rx.pending, rx.next)
 			select {
-			case rx.out <- videoFrame{rx.next, part.key, data}:
+			case rx.out <- videoFrame{rx.next, part.flags, data}:
 			default: // the browser is not reading: drop, it will resync
 			}
 			rx.next++
@@ -199,7 +195,7 @@ func (rx *videoRx) deliver(n *node, p *peer) {
 		// The next frame is missing or incomplete. A newer complete key
 		// frame lets us jump; otherwise wait a little, then give up on it.
 		for id, other := range rx.pending {
-			if id > rx.next && other.key && other.got == len(other.chunks) {
+			if id > rx.next && other.key() && other.got == len(other.chunks) {
 				for old := range rx.pending {
 					if old < id {
 						delete(rx.pending, old)
@@ -241,3 +237,5 @@ func (rx *videoRx) tidy(n *node, p *peer) {
 
 // sharingNow reports whether p says they are sharing their screen.
 func (p *peer) sharingNow() bool { return p.sharing.Load() }
+
+func (v *videoPartial) key() bool { return v.flags&videoFlagKey != 0 }

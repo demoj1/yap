@@ -35,7 +35,7 @@
   .status, .vol { grid-column:1 / -1 }
   .card.me .avatar { color:var(--green) }
   .name { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis } .name small { color:var(--dim); font-weight:400; font-size:11px; margin-left:4px }
-  .status { font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100% }
+  .status { font-size:12px; color:var(--dim); max-width:100%; line-height:1.5 }
   .status .p { display:inline-block; padding:0 4px; background:var(--card2) }
   .status .p.red { background:var(--alarm-bg); color:var(--red) } .status .p.green { background:var(--on-bg); color:var(--green) } .status .p.yellow { background:var(--warn-bg); color:var(--yellow) }
   .talk { font-size:11px; color:var(--dim); text-align:right }
@@ -114,6 +114,11 @@
   <h3>speakers</h3><select id="outputs" onchange="act({Device:{Kind:'out',Name:this.value}})"></select>
   <h3>bitrate</h3><div class="row"><span><b id="bitrate"></b> kbps</span><span><button onclick="act({Bitrate:-1})">−</button> <button onclick="act({Bitrate:1})">+</button></span></div>
   <h3>echo</h3><div id="knobs"></div>
+  <h3>screen share</h3>
+  <div class="row"><span>codec</span><select id="sh-codec" style="width:auto" onchange="shareSet('codec',this.value)"><option value="vp8">VP8</option><option value="vp9">VP9 (better, more CPU)</option></select></div>
+  <div class="row"><span>size</span><select id="sh-res" style="width:auto" onchange="shareSet('res',this.value)"><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option><option value="0">as is</option></select></div>
+  <div class="row"><span>frame rate</span><select id="sh-fps" style="width:auto" onchange="shareSet('fps',this.value)"><option>5</option><option>10</option><option>15</option><option>24</option><option>30</option></select></div>
+  <div class="row"><span>bitrate</span><select id="sh-kbps" style="width:auto" onchange="shareSet('kbps',this.value)"><option value="1000">1 Mbit/s</option><option value="2500">2.5 Mbit/s</option><option value="5000">5 Mbit/s</option><option value="8000">8 Mbit/s</option><option value="15000">15 Mbit/s</option></select></div>
   <h3>stats</h3><div class="dim" id="stats"></div>
   <h3>log</h3><div id="log"></div>
 </aside>
@@ -199,7 +204,7 @@ function render(s) {
   const people = s.People || [], seen = { [s.Name]: 1 };
   const meEl = card({ Name: s.Name, Level: s.Self.Level, Talk: s.Self.Talk }, true);
   watchers = s.Self.Watchers;
-  setStatus(meEl, (share ? pill(`▶ sharing · ${watchers} watching`, 'green') + ' ' : '') + (s.Self.Muted ? pill('● muted', 'red') : s.Self.PTT ? (s.Self.Talking ? pill('● talking', 'green') : pill('hold space to talk')) : pill(`tx ${s.Bitrate} kbps`)));
+  setStatus(meEl, (share ? pill(`▶ ${share.info || 'sharing'} · ${watchers} watching`, 'green') + ' ' : '') + (s.Self.Muted ? pill('● muted', 'red') : s.Self.PTT ? (s.Self.Talking ? pill('● talking', 'green') : pill('hold space to talk')) : pill(`tx ${s.Bitrate} kbps`)));
   if (s.Self.KeyReq !== keyReqSeen) { keyReqSeen = s.Self.KeyReq; if (share) share.wantKey = true; }
   const mg = meEl.querySelector('input');
   if (!mg.dataset.drag) { mg.value = s.Self.Gain; mg.nextElementSibling.textContent = s.Self.Gain + '%'; }
@@ -236,16 +241,21 @@ function render(s) {
   $('relay').innerHTML = (s.Relays || []).map(r => `⇄ relay ${r.Connected ? r.RTT.toFixed(0) + ' ms' : '<span class="yellow">connecting…</span>'}`).join(' · ');
   $('stats').textContent = `tx ${s.Self.Muted ? 0 : s.Bitrate * people.length} kbps · rx ${rxAll.toFixed(0)} kbps · ` + people.map(p => `${p.Name}: lost ${p.Lost} stall ${p.Stall} skip ${p.Skip} rebuf ${p.Rebuf}`).join(' · ');
 
-  // control bar: rebuilt only when something in it changes
-  const ck = JSON.stringify(s.Toggles) + (share ? '+share' : '');
+  // control bar: the buttons are built once (a rebuild under the pointer
+  // eats the click); state and the live reading are updated in place
+  const ck = s.Toggles.map(t => t.Key + t.Label).join();
   if (ck !== ctlKey) {
     ctlKey = ck;
     $('ctls').innerHTML = s.Toggles.map(t => {
       const i = t.Label.indexOf(t.Key), label = esc(t.Label.slice(0, i)) + '<u>' + esc(t.Key) + '</u>' + esc(t.Label.slice(i + 1));
-      const cls = t.On ? 'on' : t.OffRed ? 'alarm' : '';
-      const live = t.Key === 'w' ? t.Live.replace(/^.*:/, ':') : t.Live; // the web address fits as its port
-      return `<button class="ctl ${cls}" onclick="act({Key:'${t.Key}'})"><b>${label}</b><small>${t.On ? esc(live || 'on') : 'off'}</small></button>`;
-    }).join('') + `<button class="ctl ${share ? 'on' : ''}" onclick="toggleShare()"><b>share <u>v</u>ideo</b><small>${share ? 'screen' : 'off'}</small></button>`;
+      return `<button class="ctl" data-key="${t.Key}" onclick="act({Key:'${t.Key}'})"><b>${label}</b><small></small></button>`;
+    }).join('') + `<button class="ctl" data-key="share" onclick="toggleShare()"><b>share <u>v</u>ideo</b><small></small></button>`;
+  }
+  for (const t of s.Toggles.concat([{ Key: 'share', On: !!share, Live: 'screen' }])) {
+    const b = $('ctls').querySelector(`[data-key="${t.Key}"]`), live = t.Key === 'w' ? t.Live.replace(/^.*:/, ':') : t.Live;
+    const cls = 'ctl ' + (t.On ? 'on' : t.OffRed ? 'alarm' : ''), txt = t.On ? (live || 'on') : 'off';
+    if (b.className !== cls) b.className = cls;
+    if (b.lastChild.textContent !== txt) b.lastChild.textContent = txt;
   }
   // drawer: rebuilt only when its contents change
   const dk = JSON.stringify([s.Inputs, s.Outputs, s.Mic, s.Out, s.Bitrate, s.Knobs]);
@@ -308,43 +318,65 @@ $('chat').addEventListener('drop', e => { e.preventDefault(); upload([...e.dataT
 $('pick').addEventListener('change', e => { upload([...e.target.files]); e.target.value = ''; });
 // Screen sharing: the browser captures and encodes (VP8, 15 fps, 720p max),
 // every frame goes to yap which fans it out; a viewer's browser decodes.
-const shareFPS = 15, shareKbps = 1500;
+// Settings live in this browser (it is the one encoding) and apply live.
+const codecs = { vp8: 'vp8', vp9: 'vp09.00.10.08' };
+let shareCfg = { codec: 'vp8', res: 720, fps: 15, kbps: 2500 };
+try { Object.assign(shareCfg, JSON.parse(localStorage.share || '{}')); } catch (e) {}
+function shareSet(k, v) {
+  shareCfg[k] = k === 'codec' ? v : +v;
+  try { localStorage.share = JSON.stringify(shareCfg); } catch (e) {}
+  if (!share) return;
+  if (k === 'res') share.stream.getVideoTracks()[0].applyConstraints(shareSize()).catch(() => {});
+  if (k === 'fps') { clearInterval(share.timer); share.timer = setInterval(shareTick, 1000 / shareCfg.fps); }
+  share.w = 0; // codec / bitrate / size: the encoder is set up again on the next frame
+}
+function shareSize() { return shareCfg.res ? { width: { max: Math.round(shareCfg.res * 16 / 9) }, height: { max: shareCfg.res } } : {}; }
+for (const k of ['codec', 'res', 'fps', 'kbps']) $('sh-' + k).value = shareCfg[k];
 let share = null, keyReqSeen = 0, watchers = 0;
 async function toggleShare() {
   if (share) { stopShare(); return; }
   if (!window.VideoEncoder) return toast('this browser has no WebCodecs — use Chrome/Brave/Edge or Firefox 130+');
   let stream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: shareFPS, width: { max: 1280 }, height: { max: 720 } }, audio: false });
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: shareCfg.fps, ...shareSize() }, audio: false });
   } catch (e) { return; }
   const video = document.createElement('video');
   video.srcObject = stream; video.muted = true;
   await video.play();
   const enc = new VideoEncoder({ output: sendFrame, error: e => { toast('encoder: ' + e.message); stopShare(); } });
-  share = { stream, video, enc, w: 0, h: 0, n: 0, wantKey: true };
+  share = { stream, video, enc, w: 0, h: 0, n: 0, wantKey: true, codec: 'vp8' };
   act({ Share: true }); // everyone learns we share; frames go to whoever asks
   stream.getVideoTracks()[0].onended = stopShare; // the browser's own "stop sharing"
-  share.timer = setInterval(() => {
-    if (!share || !watchers || enc.encodeQueueSize > 2) return; // nobody watching, or encoder behind: skip this one
-    const w = video.videoWidth, h = video.videoHeight;
-    if (!w) return;
-    if (w !== share.w || h !== share.h) { // first frame or the window was resized
-      share.w = w; share.h = h; share.wantKey = true;
-      enc.configure({ codec: 'vp8', width: w, height: h, bitrate: shareKbps * 1000, framerate: shareFPS, latencyMode: 'realtime' });
-    }
-    const frame = new VideoFrame(video, { timestamp: Math.round(performance.now() * 1000) });
-    enc.encode(frame, { keyFrame: share.wantKey || share.n % (shareFPS * 2) === 0 });
-    frame.close(); share.wantKey = false; share.n++;
-  }, 1000 / shareFPS);
+  share.timer = setInterval(shareTick, 1000 / shareCfg.fps);
+  share.frames = share.bytes = 0; share.info = '';
+  share.stat = setInterval(() => { // what goes out, for our own tile
+    share.info = share.w ? `${share.w}×${share.h} ${share.codec.toUpperCase()} · ${share.frames} fps · ${(share.bytes * 8 / 1000).toFixed(0)} kbit/s` : 'starting…';
+    share.frames = share.bytes = 0;
+  }, 1000);
   ctlKey = '';
+}
+async function shareTick() {
+  if (!share || !watchers || share.enc.encodeQueueSize > 2) return; // nobody watching, or encoder behind: skip this one
+  const { video, enc } = share, w = video.videoWidth, h = video.videoHeight;
+  if (!w) return;
+  if (w !== share.w || h !== share.h) { // first frame, the window was resized, or a setting changed
+    let codec = shareCfg.codec;
+    if (codec === 'vp9' && !(await VideoEncoder.isConfigSupported({ codec: codecs.vp9, width: w, height: h })).supported) { codec = 'vp8'; toast('no VP9 encoder here, using VP8'); }
+    share.w = w; share.h = h; share.wantKey = true; share.codec = codec;
+    enc.configure({ codec: codecs[codec], width: w, height: h, bitrate: shareCfg.kbps * 1000, framerate: shareCfg.fps, latencyMode: 'realtime' });
+  }
+  const frame = new VideoFrame(video, { timestamp: Math.round(performance.now() * 1000) });
+  enc.encode(frame, { keyFrame: share.wantKey || share.n % (shareCfg.fps * 2) === 0 });
+  frame.close(); share.wantKey = false; share.n++;
 }
 function sendFrame(chunk) {
   const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
-  fetch('/video?key=' + (chunk.type === 'key' ? 1 : 0), { method: 'POST', body: buf }).catch(() => {});
+  if (share) { share.frames++; share.bytes += buf.length; }
+  fetch(`/video?key=${chunk.type === 'key' ? 1 : 0}&codec=${share && share.codec === 'vp9' ? 1 : 0}`, { method: 'POST', body: buf }).catch(() => {});
 }
 function stopShare() {
   if (!share) return;
-  clearInterval(share.timer);
+  clearInterval(share.timer); clearInterval(share.stat);
   try { share.enc.close(); } catch (e) {}
   share.stream.getTracks().forEach(t => t.stop());
   share = null; ctlKey = '';
@@ -355,19 +387,24 @@ const screens = {};
 // pip pops someone's screen out into a picture-in-picture window (the
 // canvas is turned into a stream for a hidden <video>).
 async function pip(name) {
-  if (!screens[name]) watch(name);
+  const fresh = !screens[name];
+  if (fresh) watch(name);
   const w = screens[name], canvas = w.el.querySelector('canvas');
   if (!w.pipVideo) {
     w.pipVideo = document.createElement('video');
     w.pipVideo.muted = true;
-    w.pipVideo.srcObject = canvas.captureStream(shareFPS);
+    w.pipVideo.srcObject = canvas.captureStream(30);
     w.pipVideo.play().catch(() => {});
+    // the floating window is the viewer: the inline picture stays hidden
+    // and closing the window ends the watching (unless it was open before)
+    w.pipVideo.addEventListener('leavepictureinpicture', () => { if (fresh) unwatch(name); else w.el.hidden = false; });
   }
   if (!w.pipVideo.requestPictureInPicture) return toast('no picture-in-picture in this browser');
+  w.el.hidden = true;
   try {
     if (!w.pipVideo.videoWidth) await new Promise(r => w.pipVideo.addEventListener('loadedmetadata', r, { once: true }));
     await w.pipVideo.requestPictureInPicture();
-  } catch (e) { toast('pip: ' + e.message); }
+  } catch (e) { w.el.hidden = false; toast('pip: ' + e.message); }
 }
 async function watch(name) {
   if (screens[name]) return;
@@ -378,13 +415,17 @@ async function watch(name) {
   $('screens').append(el);
   const canvas = el.querySelector('canvas'), ctx = canvas.getContext('2d');
   const abort = new AbortController();
-  const w = screens[name] = { el, abort, synced: false };
+  const w = screens[name] = { el, abort, synced: false, codec: '', frames: 0, bytes: 0 };
+  const label = el.querySelector('span');
   const dec = new VideoDecoder({
     output: f => { if (canvas.width !== f.displayWidth) { canvas.width = f.displayWidth; canvas.height = f.displayHeight; } ctx.drawImage(f, 0, 0); f.close(); },
-    error: () => { w.synced = false; try { dec.reset(); dec.configure({ codec: 'vp8' }); } catch (e) {} },
+    error: () => { w.synced = false; try { dec.reset(); dec.configure({ codec: codecs[w.codec] }); } catch (e) {} },
   });
-  dec.configure({ codec: 'vp8' });
   w.dec = dec;
+  w.stat = setInterval(() => { // what is arriving: size, codec, frames and bits per second
+    label.textContent = `${name} · ${canvas.width}×${canvas.height} · ${w.codec.toUpperCase()} · ${w.frames} fps · ${(w.bytes * 8 / 1000).toFixed(0)} kbit/s`;
+    w.frames = w.bytes = 0;
+  }, 1000);
   try {
     const r = await fetch('/video/' + encodeURIComponent(name), { signal: abort.signal });
     const reader = r.body.getReader();
@@ -395,12 +436,17 @@ async function watch(name) {
       const joined = new Uint8Array(buf.length + value.length); joined.set(buf); joined.set(value, buf.length); buf = joined;
       for (;;) {
         if (buf.length < 5) break;
-        const len = (buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3]) >>> 0, key = buf[4] === 1;
+        const len = (buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3]) >>> 0, flags = buf[4], key = (flags & 1) === 1, codec = (flags >> 2) & 3 ? 'vp9' : 'vp8';
         if (buf.length < 5 + len) break;
         const data = buf.slice(5, 5 + len); buf = buf.slice(5 + len);
         if (!w.synced && !key) continue;
-        w.synced = true;
-        if (dec.state === 'configured') dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: n++ * 1e6 / shareFPS, data }));
+        if (key && codec !== w.codec) { // first frame, or the sender switched codecs
+          w.codec = codec;
+          if (dec.state !== 'unconfigured') dec.reset();
+          dec.configure({ codec: codecs[codec] });
+        }
+        w.synced = true; w.frames++; w.bytes += len;
+        if (dec.state === 'configured') dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: n++ * 1e6 / 30, data }));
       }
     }
   } catch (e) {}
@@ -410,6 +456,7 @@ function unwatch(name) {
   const w = screens[name];
   if (!w) return;
   delete screens[name];
+  clearInterval(w.stat);
   w.abort.abort();
   try { w.dec.close(); } catch (e) {}
   w.el.remove();

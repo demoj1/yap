@@ -130,14 +130,22 @@ func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
 }
 
 // videoIn takes one encoded frame of our screen from the page (?key=1 for
-// a key frame) and sends it to everyone.
+// a key frame, ?codec=1 for VP9) and sends it to everyone.
 func (w *webServer) videoIn(rw http.ResponseWriter, r *http.Request) {
 	data, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, 4<<20))
 	if err != nil {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
-	w.n.sendVideo(data, r.URL.Query().Get("key") == "1")
+	q := r.URL.Query()
+	var flags byte
+	if q.Get("key") == "1" {
+		flags |= videoFlagKey
+	}
+	if q.Get("codec") == "1" {
+		flags |= 1 << 2 // VP9
+	}
+	w.n.sendVideo(data, flags)
 }
 
 // videoOut streams someone's screen to the page as it comes in:
@@ -171,10 +179,7 @@ func (w *webServer) videoOut(rw http.ResponseWriter, r *http.Request) {
 			w.n.sendTo(p, videoCtl(videoFlagWant))
 		case f := <-rx.out:
 			binary.BigEndian.PutUint32(head, uint32(len(f.data)))
-			head[4] = 0
-			if f.key {
-				head[4] = videoFlagKey
-			}
+			head[4] = f.flags
 			if _, err := rw.Write(head); err != nil {
 				return
 			}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"syscall"
 )
 
@@ -232,7 +233,7 @@ func main() {
 
 func defaultName() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {
-		return u.Username
+		return u.Username[strings.LastIndex(u.Username, `\`)+1:] // Windows says DOMAIN\user
 	}
 	h, _ := os.Hostname()
 	return h
