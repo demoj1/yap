@@ -345,7 +345,7 @@ function shareSet(k, v) {
   try { localStorage.share = JSON.stringify(shareCfg); } catch (e) {}
   if (!share) return;
   if (k === 'res') share.stream.getVideoTracks()[0].applyConstraints(shareSize()).catch(() => {});
-  if (k === 'fps') { clearInterval(share.timer); share.timer = setInterval(shareTick, 1000 / shareCfg.fps); }
+  if (k === 'fps' && share.retick) share.retick();
   share.w = 0; // codec / bitrate / size: the encoder is set up again on the next frame
 }
 function shareSize() { return shareCfg.res ? { width: { max: Math.round(shareCfg.res * 16 / 9) }, height: { max: shareCfg.res } } : {}; }
@@ -365,7 +365,7 @@ async function toggleShare() {
   share = { stream, video, enc, w: 0, h: 0, n: 0, wantKey: true, codec: 'vp8' };
   act({ Share: true }); // everyone learns we share; frames go to whoever asks
   stream.getVideoTracks()[0].onended = stopShare; // the browser's own "stop sharing"
-  share.timer = setInterval(shareTick, 1000 / shareCfg.fps);
+  startTicker();
   share.frames = share.bytes = 0; share.info = '';
   share.stat = setInterval(() => { // what goes out, for our own tile
     share.info = share.w ? `${share.h}p ${share.codec.toUpperCase()} ${share.frames}fps ${(share.bytes * 8 / 1e6).toFixed(1)}Mb/s` : 'starting…';
@@ -373,9 +373,36 @@ async function toggleShare() {
   }, 1000);
   ctlKey = '';
 }
-async function shareTick() {
+// Frames must keep coming while our tab is in the background (that is
+// where a sharer's browser usually is): page timers are throttled there,
+// so Chrome pulls frames straight from the track and Safari is ticked
+// from a worker, which is throttled far less.
+function startTicker() {
+  const track = share.stream.getVideoTracks()[0];
+  if (window.MediaStreamTrackProcessor) {
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    share.stopTicker = () => reader.cancel().catch(() => {});
+    (async () => {
+      let last = 0;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done || !share) { if (value) value.close(); break; }
+        const now = performance.now();
+        if (now - last >= 1000 / shareCfg.fps - 2) { last = now; await shareTick(value); } // the track may run faster than asked
+        value.close();
+      }
+    })();
+  } else {
+    const w = new Worker(URL.createObjectURL(new Blob([`let t; onmessage = e => { clearInterval(t); t = setInterval(() => postMessage(0), e.data) }`])));
+    w.postMessage(1000 / shareCfg.fps);
+    w.onmessage = () => shareTick(null);
+    share.stopTicker = () => w.terminate();
+    share.retick = () => w.postMessage(1000 / shareCfg.fps);
+  }
+}
+async function shareTick(frame) {
   if (!share || !watchers || share.enc.encodeQueueSize > 2) return; // nobody watching, or encoder behind: skip this one
-  const { video, enc } = share, w = video.videoWidth, h = video.videoHeight;
+  const { video, enc } = share, w = frame ? frame.displayWidth : video.videoWidth, h = frame ? frame.displayHeight : video.videoHeight;
   if (!w) return;
   if (w !== share.w || h !== share.h) { // first frame, the window was resized, or a setting changed
     let codec = shareCfg.codec;
@@ -383,9 +410,10 @@ async function shareTick() {
     share.w = w; share.h = h; share.wantKey = true; share.codec = codec;
     enc.configure({ codec: codecs[codec], width: w, height: h, bitrate: shareCfg.kbps * 1000, framerate: shareCfg.fps, latencyMode: 'realtime' });
   }
-  const frame = new VideoFrame(video, { timestamp: Math.round(performance.now() * 1000) });
-  enc.encode(frame, { keyFrame: share.wantKey || share.n % (shareCfg.fps * 2) === 0 });
-  frame.close(); share.wantKey = false; share.n++;
+  const own = frame || new VideoFrame(video, { timestamp: Math.round(performance.now() * 1000) });
+  enc.encode(own, { keyFrame: share.wantKey || share.n % (shareCfg.fps * 2) === 0 });
+  if (!frame) own.close();
+  share.wantKey = false; share.n++;
 }
 function sendFrame(chunk) {
   const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
@@ -394,7 +422,7 @@ function sendFrame(chunk) {
 }
 function stopShare() {
   if (!share) return;
-  clearInterval(share.timer); clearInterval(share.stat);
+  share.stopTicker(); clearInterval(share.stat);
   try { share.enc.close(); } catch (e) {}
   share.stream.getTracks().forEach(t => t.stop());
   share = null; ctlKey = '';
