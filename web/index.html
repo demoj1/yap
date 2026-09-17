@@ -35,7 +35,7 @@
   .status, .vol, .acts { grid-column:1 / -1 } .acts:empty { display:none } .acts button { background:var(--card2); border:1px solid var(--line); padding:0 6px; font-size:12px } .acts button:hover { border-color:var(--blue) }
   .card.me .avatar { color:var(--green) }
   .name { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis } .name small { color:var(--dim); font-weight:400; font-size:11px; margin-left:4px }
-  .status { font-size:12px; color:var(--dim); max-width:100%; line-height:1.5 }
+  .status { font-size:12px; color:var(--dim); max-width:100%; line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .status .p { display:inline-block; padding:0 4px; background:var(--card2) }
   .status .p.red { background:var(--alarm-bg); color:var(--red) } .status .p.green { background:var(--on-bg); color:var(--green) } .status .p.yellow { background:var(--warn-bg); color:var(--yellow) }
   .talk { font-size:11px; color:var(--dim); text-align:right }
@@ -368,7 +368,7 @@ async function toggleShare() {
   share.timer = setInterval(shareTick, 1000 / shareCfg.fps);
   share.frames = share.bytes = 0; share.info = '';
   share.stat = setInterval(() => { // what goes out, for our own tile
-    share.info = share.w ? `${share.w}×${share.h} ${share.codec.toUpperCase()} · ${share.frames} fps · ${(share.bytes * 8 / 1000).toFixed(0)} kbit/s` : 'starting…';
+    share.info = share.w ? `${share.h}p ${share.codec.toUpperCase()} ${share.frames}fps ${(share.bytes * 8 / 1e6).toFixed(1)}Mb/s` : 'starting…';
     share.frames = share.bytes = 0;
   }, 1000);
   ctlKey = '';
