@@ -10,6 +10,9 @@ import (
 // letting go closes the mic within this window.
 const pttHold = 600 * time.Millisecond
 
+// duckHold is how long after the last loud speaker frame the mic stays down.
+const duckHold = 300 * time.Millisecond
+
 var bitrates = []int{12, 16, 24, 32, 48, 64, 96, 128, 160} // kbps
 
 // controls are the live knobs the UI turns for our own outgoing stream;
@@ -25,6 +28,7 @@ type controls struct {
 
 	sounds    atomic.Bool  // chimes for people coming and going and for chat messages
 	ptt       atomic.Bool  // push-to-talk: silent unless space is being held
+	duck      atomic.Bool  // while the speakers play a voice, the mic is held down 30 dB: no echo, no interrupting
 	talkUntil atomic.Int64 // unix nanos until which the last space press keeps the mic open
 }
 

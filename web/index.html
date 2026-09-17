@@ -301,7 +301,7 @@ es.onerror = () => { $('qtext').textContent = 'yap is not running'; $('quality')
 document.addEventListener('keydown', e => {
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === ' ') { act({ Key: ' ' }); e.preventDefault(); }
-  else if (/^[mdgealpws]$/.test(e.key)) act({ Key: e.key });
+  else if (/^[mdgealpwsu]$/.test(e.key)) act({ Key: e.key });
   else if (e.key === 't' || e.key === 'Enter') { say.focus(); e.preventDefault(); }
   else if (e.key === 'Escape') { drawer.classList.remove('open'); $('zoom').classList.remove('show'); }
 });

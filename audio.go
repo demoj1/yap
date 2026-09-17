@@ -96,7 +96,7 @@ type audio struct {
 
 	aecMu   sync.Mutex     // guards aec against a knob change while onData runs it
 	aec     *aec.Canceller // echo canceller, fed in onData
-	aecOn   atomic.Bool    // echo cancellation enabled (it only runs while echo is heard)
+	aecOn   atomic.Bool    // echo cancellation enabled
 	echo    echoTracker    // onData only
 	echoing atomic.Bool    // the tracker currently hears the speakers in the mic
 	echoLag atomic.Int32   // its delay estimate, ms, for the screen
@@ -124,9 +124,10 @@ func (a *audio) setAEC(suppress, active int) {
 // frames are kept for half a second and a tracker keeps estimating, from
 // the correlation of the two loudness envelopes, how many frames later the
 // mic hears them; the canceller gets the frame from that far back and a
-// short tail. While the tracker hears no echo (headphones) it does not run.
+// short tail. Until it has an estimate the reference is the frame just
+// played and the tail has to cover the delay; the canceller always runs.
 const (
-	aecTailMS  = 120  // about a third of a room's reverberation, per the Speex manual
+	aecTailMS  = 200  // covers the echo of a frame fed with no delay estimate yet, plus the room
 	echoMaxLag = 50   // frames (500 ms) of playback history the echo is searched in
 	echoHist   = 300  // frames (3 s) of envelopes an estimate is made over
 	echoLead   = 2    // frames: the reference is fed this much ahead of the estimated echo
@@ -280,16 +281,17 @@ func (a *audio) onData(out, in []byte, count uint32) {
 		}
 		a.echoing.Store(a.echo.echo)
 		a.echoLag.Store(int32(a.echo.lag * frameMS / 2))
-		if a.echo.echo {
-			before := sumSq(mic)
-			a.aecMu.Lock()
-			a.aec.Process(mic, a.echo.reference()) // remove what the speakers played from the mic
-			a.aecMu.Unlock()
-			if before > 1e6 { // only meaningful when there was something to cancel
-				db := 10 * math.Log10(before/(sumSq(mic)+1))
-				prev := math.Float64frombits(a.aecDB.Load())
-				a.aecDB.Store(math.Float64bits(prev + (db-prev)*0.1))
-			}
+		// Always cancel: before the tracker has a delay the reference is the
+		// frame just played and the tail covers the delay; once it has one
+		// the reference is aligned and the tail is all room.
+		before := sumSq(mic)
+		a.aecMu.Lock()
+		a.aec.Process(mic, a.echo.reference())
+		a.aecMu.Unlock()
+		if before > 1e6 { // only meaningful when there was something to cancel
+			db := 10 * math.Log10(before/(sumSq(mic)+1))
+			prev := math.Float64frombits(a.aecDB.Load())
+			a.aecDB.Store(math.Float64bits(prev + (db-prev)*0.1))
 		}
 	}
 	a.micPeak.observe(mic)

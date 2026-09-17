@@ -53,7 +53,7 @@ func TestEchoTrackerHearsNoEchoOnHeadphones(t *testing.T) {
 	}
 }
 
-// The whole path: a 200 ms echo — longer than the canceller's 120 ms tail —
+// The whole path: a 200 ms echo — as long as the canceller's tail —
 // is still cancelled, because the tracker feeds the reference from 200 ms
 // back and only the room's reverb has to fit in the tail.
 func TestTrackerAlignsCancellerBeyondTail(t *testing.T) {

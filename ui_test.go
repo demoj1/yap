@@ -43,7 +43,7 @@ func TestRenderFits(t *testing.T) {
 func TestKeys(t *testing.T) {
 	m := testModel(t)
 	// "c" is left out: it would put a test link on the real clipboard.
-	for _, key := range []string{"m", "d", "g", "e", "a", "l", "p", "s", " ", "tab", "[", "]", "up", "down", "left", "right", "+", "-", "y", "n"} {
+	for _, key := range []string{"m", "d", "g", "e", "a", "l", "p", "s", "u", " ", "tab", "[", "]", "up", "down", "left", "right", "+", "-", "y", "n"} {
 		mm, _ := m.act(key)
 		m = mm.(model)
 	}
