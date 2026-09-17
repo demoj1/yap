@@ -59,9 +59,9 @@
   #toast { position:fixed; left:50%; bottom:104px; transform:translateX(-50%); background:var(--card2); border:1px solid var(--line); border-radius:999px; padding:6px 14px; color:var(--yellow); opacity:0; transition:opacity .2s; pointer-events:none }
   #toast.show { opacity:1 }
 
-  .room { display:grid; grid-template-columns:1fr minmax(280px,360px); gap:18px; align-items:start }
-  @media (max-width:760px) { .room { grid-template-columns:1fr } }
-  #chat { background:var(--card); border:1px solid var(--line); border-radius:16px; display:flex; flex-direction:column; height:min(70vh,640px) }
+  .room { display:grid; grid-template-columns:1fr minmax(300px,400px); gap:18px; align-items:start; min-height:calc(100vh - 190px) }
+  #chat { background:var(--card); border:1px solid var(--line); border-radius:16px; display:flex; flex-direction:column; height:calc(100vh - 190px); position:sticky; top:12px }
+  @media (max-width:760px) { .room { grid-template-columns:1fr; min-height:0 } #chat { height:60vh; position:static } }
   #msgs { flex:1; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:6px }
   .msg { font-size:14px; line-height:1.4; white-space:pre-wrap; word-break:break-word }
   .msg .t { color:var(--dim); font-size:11px; margin-right:6px } .msg .w { font-weight:600; margin-right:6px } .msg.me .w { color:var(--green) }
