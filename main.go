@@ -101,6 +101,7 @@ func main() {
 	ctl.agc.Store(set.AGC && !*noagc)
 	ctl.ptt.Store(set.PTT)
 	ctl.sounds.Store(set.Sounds)
+	ctl.micGain.Store(int32(set.MicGain))
 
 	var l link
 	relay := false

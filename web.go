@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -71,6 +72,8 @@ func (w *webServer) start() string {
 	})
 	mux.HandleFunc("/events", w.events)
 	mux.HandleFunc("/act", w.act)
+	mux.HandleFunc("/upload", w.upload)
+	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(w.n.files.dir))))
 	w.ln, w.srv = ln, &http.Server{Handler: mux}
 	go w.srv.Serve(ln)
 	w.n.system("web UI at http://%s", ln.Addr())
@@ -109,12 +112,24 @@ func (w *webServer) events(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// upload takes one file (?name=, raw body) and sends it to the room.
+func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, fileMax))
+	if err == nil {
+		err = w.n.sendFile(r.URL.Query().Get("name"), data)
+	}
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+	}
+}
+
 // act performs one action from the page and answers with the notice.
 func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	var a struct {
 		Key     string
 		Peer    string
 		Volume  *int
+		MicGain *int
 		Device  *struct{ Kind, Name string }
 		Knob    *struct{ I, Dir int }
 		Bitrate int
@@ -136,6 +151,12 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 			n.setVolume(p, v)
 			notice = fmt.Sprintf("%s volume %d%%", p.name, v)
 		}
+	case a.MicGain != nil:
+		g := max(0, min(300, *a.MicGain))
+		n.ctl.micGain.Store(int32(g))
+		n.set.MicGain = g
+		n.set.save()
+		notice = fmt.Sprintf("mic gain %d%%", g)
 	case a.Device != nil:
 		kind := malgo.Capture
 		if a.Device.Kind == "out" {
@@ -184,11 +205,14 @@ type chatJSON struct {
 	At   int64 // unix ms
 	From string
 	Text string
+	File string // served at /files/<File>
+	Size int
 }
 
 type selfJSON struct {
 	Level               float64 // dBFS, -Inf when silent
 	Talk                int64   // ms
+	Gain                int     // mic gain, percent
 	Muted, PTT, Talking bool
 }
 
@@ -222,7 +246,7 @@ func (n *node) snapshot() snapshot {
 	if tag := n.update.Load(); tag != nil {
 		s.Update = *tag
 	}
-	s.Self = selfJSON{Level: dbJSON(n.micDB.Load()), Talk: n.talkMS.Load(), Muted: n.ctl.muted.Load(), PTT: n.ctl.ptt.Load(), Talking: n.ctl.talking()}
+	s.Self = selfJSON{Level: dbJSON(n.micDB.Load()), Talk: n.talkMS.Load(), Gain: int(n.ctl.micGain.Load()), Muted: n.ctl.muted.Load(), PTT: n.ctl.ptt.Load(), Talking: n.ctl.talking()}
 	for _, p := range n.peerList() {
 		j := peerJSON{Name: p.name, Ver: verText(p), Connected: p.connected(), Path: "connecting",
 			RTT: float64(p.rttUS.Load()) / 1000, Jitter: float64(p.jitUS.Load()) / 1000, RxBytes: p.rxBytes.Load(),
@@ -266,7 +290,7 @@ func (n *node) snapshot() snapshot {
 		s.Logs = n.logs.tail(40)
 	}
 	for _, c := range n.chat.tail(100) {
-		s.Chat = append(s.Chat, chatJSON{c.At.UnixMilli(), c.From, c.Text})
+		s.Chat = append(s.Chat, chatJSON{c.At.UnixMilli(), c.From, c.Text, c.File, c.Size})
 	}
 	return s
 }

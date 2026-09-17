@@ -44,6 +44,7 @@ type node struct {
 	logs     *logRing                    // recent log lines for the browser
 	chat     chat                        // what people wrote and what happened
 	chatSeq  atomic.Uint32               // id of our last chat message
+	files    *files                      // files on their way in and out
 	link     link
 	id       []byte // random per run; orders the pair direction bit
 	nonce    []byte // random per run; halves of every pair key
@@ -73,7 +74,7 @@ func newNode(l link, name string, ctl *controls, set *settings) *node {
 	return &node{link: l, name: name, ctl: ctl, set: set,
 		id: randBytes(8), nonce: randBytes(16),
 		peers: map[string]*peer{}, byAddr: map[netip.AddrPort]*peer{},
-		stunCh: make(chan []byte, 4), cues: make(chan int, 8)}
+		stunCh: make(chan []byte, 4), cues: make(chan int, 8), files: newFiles()}
 }
 
 const (
@@ -548,6 +549,11 @@ func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 	case typChat:
 		p.accept(from, 0, nil)
 		n.heard(p, plain)
+	case typFile:
+		p.accept(from, 0, nil)
+		if !n.relay {
+			n.gotFile(p, plain)
+		}
 	case typState:
 		p.accept(from, 0, nil)
 		if len(plain) >= 2 {
@@ -617,6 +623,11 @@ func (n *node) sendLoop() {
 			ag.process(f) // normalize outgoing loudness
 		}
 		n.agcGain.Store(math.Float64bits(ag.gain))
+		if g := n.ctl.micGain.Load(); g != 100 && !quiet {
+			for i, x := range f {
+				f[i] = int16(max(-32768, min(32767, int32(x)*g/100)))
+			}
+		}
 		n.audio.micPeak.observe(f)
 		open := !quiet
 		if n.ctl.gate.Load() && !quiet && !g.pass(f) {

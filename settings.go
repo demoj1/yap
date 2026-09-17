@@ -19,11 +19,12 @@ type settings struct {
 	Gate    bool           `json:"gate"`
 	Echo    bool           `json:"echo"` // echo cancellation; it only kicks in while the mic hears the speakers
 	AGC     bool           `json:"agc"`
-	PTT     bool           `json:"ptt"`               // push-to-talk: mic open only while space is held
-	Web     bool           `json:"web"`               // serve the browser UI on localhost
-	Sounds  bool           `json:"sounds"`            // chimes on join/leave and chat
-	Theme   string         `json:"theme,omitempty"`   // web page: "light" or "dark"; "" follows the system
-	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
+	PTT     bool           `json:"ptt"`                // push-to-talk: mic open only while space is held
+	Web     bool           `json:"web"`                // serve the browser UI on localhost
+	Sounds  bool           `json:"sounds"`             // chimes on join/leave and chat
+	Theme   string         `json:"theme,omitempty"`    // web page: "light" or "dark"; "" follows the system
+	MicGain int            `json:"mic_gain,omitempty"` // percent, 100 = as captured
+	Volumes map[string]int `json:"volumes,omitempty"`  // friend name -> percent
 
 	// Residual echo suppression, dB, while the far end is silent / speaks.
 	AECSuppress       int `json:"aec_suppress,omitempty"`
@@ -52,6 +53,9 @@ func loadSettings() *settings {
 	}
 	if s.Bitrate == 0 {
 		s.Bitrate = 96
+	}
+	if s.MicGain == 0 {
+		s.MicGain = 100
 	}
 	if s.AECSuppress == 0 {
 		s.AECSuppress = -45

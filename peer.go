@@ -30,6 +30,7 @@ const (
 	typPong    = 4 // [4][unix nanos int64]
 	typState   = 5 // [5][flags][link]  flags bit 0: sender is muted (or push-to-talk idle); link bit 0: sender hears us. Sent on change and once a second
 	typChat    = 6 // [6][id uint32][utf-8 text]  sent three times; the id drops the repeats
+	typFile    = 7 // [7][kind][file id uint32]... a file in chunks, see files.go
 
 	stateMuted = 1
 	stateHears = 1

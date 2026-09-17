@@ -71,6 +71,11 @@
   #compose { border-top:1px solid var(--line); padding:3px 4px }
   #compose textarea { width:100%; resize:none; background:var(--card2); color:var(--fg); border:1px solid var(--line); padding:2px 4px; font:inherit; min-height:24px; max-height:120px; display:block }
   #compose small { color:var(--dim); font-size:11px }
+  #compose label { float:right; cursor:pointer; padding:0 4px } #compose label:hover { background:var(--card2) }
+  .pic { display:block; max-width:min(100%,420px); max-height:220px; border:1px solid var(--line); margin-top:2px }
+  .file { color:var(--blue) }
+  #zoom { position:fixed; inset:0; background:rgba(0,0,0,.85); display:none; place-items:center; z-index:9; cursor:zoom-out }
+  #zoom.show { display:grid } #zoom img { max-width:96vw; max-height:96vh }
 </style>
 </head>
 <body>
@@ -91,9 +96,10 @@
   </div>
   <div id="chat">
     <div id="msgs"></div>
-    <div id="compose"><textarea id="say" rows="1" placeholder="say something…"></textarea><small>enter sends · shift+enter new line</small></div>
+    <div id="compose"><textarea id="say" rows="1" placeholder="say something…"></textarea><small>enter sends · shift+enter new line · paste or drop files</small><label for="pick" title="send a file">📎</label><input type="file" id="pick" multiple hidden></div>
   </div>
 </main>
+<div id="zoom"><img alt=""></div>
 <div id="bar"><div class="in" id="ctls"></div></div>
 <div id="toast"></div>
 <aside id="drawer">
@@ -155,14 +161,12 @@ function card(p, me) {
     el.className = 'card' + (me ? ' me' : '');
     el.innerHTML = `<div class="avatar">${esc((p.Name[0] || '?').toUpperCase())}</div>
       <div class="name">${esc(p.Name)}${me ? ' <small>you</small>' : `<small class="ver"></small>`}</div>
-      <div class="status"></div><div class="talk"></div>` +
-      (me ? '' : `<div class="vol"><input type="range" min="0" max="200"><span></span></div>`);
-    if (!me) {
-      const r = el.querySelector('input');
-      r.addEventListener('pointerdown', () => r.dataset.drag = 1);
-      r.addEventListener('input', () => r.nextElementSibling.textContent = r.value + '%');
-      r.addEventListener('change', () => { delete r.dataset.drag; act({ Peer: p.Name, Volume: +r.value }); });
-    }
+      <div class="status"></div><div class="talk"></div>
+      <div class="vol" title="${me ? 'mic gain' : 'volume'}">${me ? '🎤' : ''}<input type="range" min="0" max="${me ? 300 : 200}"><span></span></div>`;
+    const r = el.querySelector('input');
+    r.addEventListener('pointerdown', () => r.dataset.drag = 1);
+    r.addEventListener('input', () => r.nextElementSibling.textContent = r.value + '%');
+    r.addEventListener('change', () => { delete r.dataset.drag; act(me ? { MicGain: +r.value } : { Peer: p.Name, Volume: +r.value }); });
     cards[p.Name] = el;
     $('cards').append(el);
   }
@@ -187,6 +191,8 @@ function render(s) {
   const people = s.People || [], seen = { [s.Name]: 1 };
   const meEl = card({ Name: s.Name, Level: s.Self.Level, Talk: s.Self.Talk }, true);
   meEl.querySelector('.status').innerHTML = s.Self.Muted ? pill('● muted', 'red') : s.Self.PTT ? (s.Self.Talking ? pill('● talking', 'green') : pill('hold space to talk')) : pill(`tx ${s.Bitrate} kbps`);
+  const mg = meEl.querySelector('input');
+  if (!mg.dataset.drag) { mg.value = s.Self.Gain; mg.nextElementSibling.textContent = s.Self.Gain + '%'; }
   let rxAll = 0, rtt = 0, jit = 0, drops = 0, via = 0, bad = 0;
   for (const p of people) {
     seen[p.Name] = 1;
@@ -251,7 +257,14 @@ function renderChat(s) {
   const box = $('msgs'), stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   box.innerHTML = msgs.map(m => {
     const t = new Date(m.At).toTimeString().slice(0, 5);
-    return `<div class="msg ${m.From ? (m.From === s.Name ? 'me' : '') : 'sys'}"><span class="t">${t}</span><span class="w">${esc(m.From || 'system')}</span>${esc(m.Text)}</div>`;
+    let body = esc(m.Text);
+    if (m.File) {
+      const url = '/files/' + encodeURIComponent(m.File), name = esc(m.File.slice(9));
+      body = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(m.File)
+        ? `<a href="${url}" onclick="return zoom(this.href)"><img class="pic" src="${url}" alt="${name}"></a>`
+        : `<a class="file" href="${url}" download>📎 ${name}</a> <span class="t">${esc(m.Text.split(' · ')[1] || '')}</span>`;
+    }
+    return `<div class="msg ${m.From ? (m.From === s.Name ? 'me' : '') : 'sys'}"><span class="t">${t}</span><span class="w">${esc(m.From || 'system')}</span>${body}</div>`;
   }).join('');
   if (stick) box.scrollTop = box.scrollHeight;
   if (grew && document.hidden) { unread++; document.title = `(${unread}) yap`; }
@@ -267,6 +280,20 @@ say.addEventListener('keydown', e => {
   }
 });
 say.addEventListener('input', () => { say.style.height = ''; say.style.height = Math.min(120, say.scrollHeight) + 'px'; });
+// files: paste a picture, drop anything on the chat, or pick with the clip
+async function upload(files) {
+  for (const f of files) {
+    toast(`sending ${f.name} (${(f.size / 1024).toFixed(0)} KB)…`);
+    const r = await fetch('/upload?name=' + encodeURIComponent(f.name || 'image.png'), { method: 'POST', body: f });
+    if (!r.ok) toast(await r.text());
+  }
+}
+say.addEventListener('paste', e => { const fs = [...e.clipboardData.files]; if (fs.length) { e.preventDefault(); upload(fs); } });
+$('chat').addEventListener('dragover', e => e.preventDefault());
+$('chat').addEventListener('drop', e => { e.preventDefault(); upload([...e.dataTransfer.files]); });
+$('pick').addEventListener('change', e => { upload([...e.target.files]); e.target.value = ''; });
+function zoom(url) { $('zoom').querySelector('img').src = url; $('zoom').classList.add('show'); return false; }
+$('zoom').addEventListener('click', () => $('zoom').classList.remove('show'));
 const drawer = $('drawer');
 const es = new EventSource('/events');
 es.onmessage = e => render(JSON.parse(e.data));
@@ -276,7 +303,7 @@ document.addEventListener('keydown', e => {
   if (e.key === ' ') { act({ Key: ' ' }); e.preventDefault(); }
   else if (/^[mdgealpws]$/.test(e.key)) act({ Key: e.key });
   else if (e.key === 't' || e.key === 'Enter') { say.focus(); e.preventDefault(); }
-  else if (e.key === 'Escape') drawer.classList.remove('open');
+  else if (e.key === 'Escape') { drawer.classList.remove('open'); $('zoom').classList.remove('show'); }
 });
 </script>
 </body>

@@ -19,6 +19,8 @@ type chatMsg struct {
 	At   time.Time
 	From string // "" is system
 	Text string
+	File string // a file in <config>/files, when the message is one
+	Size int
 }
 
 type chat struct {
@@ -26,9 +28,16 @@ type chat struct {
 	msgs []chatMsg
 }
 
-func (c *chat) add(from, text string) {
+func (c *chat) add(from, text string) { c.push(chatMsg{At: time.Now(), From: from, Text: text}) }
+
+// addFile posts a received or sent file; the text is what the terminal shows.
+func (c *chat) addFile(from, file string, size int) {
+	c.push(chatMsg{At: time.Now(), From: from, Text: "📎 " + file[9:] + " · " + sizeText(size), File: file, Size: size})
+}
+
+func (c *chat) push(m chatMsg) {
 	c.mu.Lock()
-	c.msgs = append(c.msgs, chatMsg{time.Now(), from, text})
+	c.msgs = append(c.msgs, m)
 	if len(c.msgs) > chatKeep {
 		c.msgs = c.msgs[len(c.msgs)-chatKeep:]
 	}
