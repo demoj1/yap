@@ -5,149 +5,213 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>yap</title>
 <style>
-  :root { --bg:#111418; --card:#191d23; --line:#2a3039; --fg:#e6e9ee; --dim:#7d8590; --green:#3fb950; --yellow:#e3b341; --red:#f85149; --blue:#58a6ff; }
+  :root { --bg:#0f1115; --card:#171a20; --card2:#1e222a; --line:#272c35; --fg:#e8ebf0; --dim:#8b93a1; --green:#3ddc84; --yellow:#f2c94c; --red:#ff6b6b; --blue:#6cb6ff; --ring:rgba(61,220,132,.55); }
   * { box-sizing:border-box }
-  body { margin:0; padding:16px 20px; background:var(--bg); color:var(--fg); font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif }
-  a { color:var(--blue) }
+  html, body { height:100% }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Inter,sans-serif; padding-bottom:110px }
+  button { font:inherit; color:inherit; background:none; border:0; cursor:pointer }
   .dim { color:var(--dim) } .green { color:var(--green) } .yellow { color:var(--yellow) } .red { color:var(--red) }
-  header { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; margin-bottom:6px }
-  header code { font-size:15px; color:var(--blue); font-weight:600 }
-  button { background:#22272e; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; font:inherit }
-  button:hover { border-color:var(--blue) }
-  #status { color:var(--dim); margin-bottom:12px }
-  #update { background:#3a2e12; border:1px solid var(--yellow); border-radius:6px; padding:6px 10px; margin-bottom:10px; display:none }
-  .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; margin-bottom:8px }
-  .tile { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px }
-  .tile.me { border-color:var(--green) }
-  .tile.speaking { border-color:var(--green); box-shadow:0 0 0 1px var(--green) inset }
-  .tile .head { display:flex; justify-content:space-between; gap:8px; margin-bottom:6px }
-  .tile .name { font-weight:600 } .tile.speaking .name { color:var(--green) }
-  .meter { height:8px; background:#23282f; border-radius:4px; overflow:hidden; margin:6px 0 }
-  .meter i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--green) 60%,var(--yellow) 80%,var(--red)); transition:width .08s linear }
-  .foot { display:flex; align-items:center; gap:8px; color:var(--dim) }
-  input[type=range] { width:120px; accent-color:var(--green) }
-  #relays { color:var(--dim); margin:4px 0 10px }
-  .row { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px }
-  .chip { display:inline-flex; gap:6px; align-items:center }
-  .chip b { font-weight:700 } .chip .sw { color:var(--dim) } .chip.on .sw { color:var(--green) } .chip.off.alarm .sw { color:var(--red) }
-  .panels { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; margin-bottom:10px }
-  .panel { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 12px }
-  .panel h3 { margin:0 0 6px; font-size:13px; font-weight:600 }
-  .panel ul { list-style:none; margin:0; padding:0 } .panel li { padding:3px 0; cursor:pointer; color:var(--dim) } .panel li:hover { color:var(--fg) } .panel li.cur { color:var(--green) }
-  .knob { display:flex; justify-content:space-between; align-items:center; padding:3px 0 } .knob span { color:var(--dim) }
-  #log { color:var(--dim); white-space:pre-wrap; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; max-height:40vh; overflow:auto }
-  #notice { color:var(--yellow); min-height:1.4em; margin-bottom:6px }
+
+  header { max-width:1040px; margin:0 auto; padding:18px 20px 6px; display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center }
+  .pill { display:inline-flex; align-items:center; gap:8px; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:6px 12px }
+  .pill code { font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--blue) }
+  .pill button { background:var(--card2); border-radius:999px; padding:3px 10px; font-size:13px } .pill button:hover { background:#2a3039 }
+  #quality { display:inline-flex; align-items:center; gap:8px; color:var(--dim); font-size:14px }
+  #quality i { width:9px; height:9px; border-radius:50%; background:var(--dim); display:inline-block }
+  #quality i.good { background:var(--green) } #quality i.ok { background:var(--yellow) } #quality i.poor { background:var(--red) }
+  #relay { color:var(--dim); font-size:14px }
+  .spacer { flex:1 }
+  #gear { font-size:20px; padding:4px 8px; border-radius:8px } #gear:hover { background:var(--card) }
+  #update { max-width:1040px; margin:8px auto 0; padding:0 20px } #update div { background:#3a2e12; border:1px solid var(--yellow); border-radius:10px; padding:8px 12px; display:none }
+
+  main { max-width:1040px; margin:0 auto; padding:14px 20px }
+  #empty { color:var(--dim); text-align:center; padding:30px 0 10px }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:14px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:18px 16px 14px; display:flex; flex-direction:column; align-items:center; gap:8px; transition:border-color .15s }
+  .card.speaking { border-color:var(--green) }
+  .avatar { width:76px; height:76px; border-radius:50%; background:var(--card2); display:grid; place-items:center; font-size:30px; font-weight:700; color:var(--blue); box-shadow:0 0 0 0 var(--ring); transition:box-shadow .08s linear }
+  .card.me .avatar { color:var(--green) }
+  .name { font-weight:600; font-size:16px } .name small { color:var(--dim); font-weight:400; font-size:12px; margin-left:6px }
+  .status { font-size:13px; color:var(--dim); min-height:1.3em; text-align:center }
+  .status .p { display:inline-block; padding:1px 8px; border-radius:999px; background:var(--card2) }
+  .status .p.red { background:#3a1d1d; color:var(--red) } .status .p.green { background:#173226; color:var(--green) } .status .p.yellow { background:#3a3012; color:var(--yellow) }
+  .talk { font-size:12px; color:var(--dim) }
+  .vol { width:100%; display:flex; align-items:center; gap:10px; margin-top:4px }
+  .vol input { flex:1; accent-color:var(--green) } .vol span { width:42px; text-align:right; font-size:13px; color:var(--dim) }
+
+  #bar { position:fixed; left:0; right:0; bottom:0; background:rgba(15,17,21,.92); backdrop-filter:blur(8px); border-top:1px solid var(--line); padding:10px 12px 12px }
+  #bar .in { max-width:1040px; margin:0 auto; display:flex; flex-wrap:wrap; justify-content:center; gap:8px }
+  .ctl { width:92px; padding:8px 6px; border-radius:12px; background:var(--card); border:1px solid var(--line); display:flex; flex-direction:column; align-items:center; gap:2px }
+  .ctl b { font-size:14px; font-weight:600 } .ctl b u { text-decoration:none; color:var(--blue) }
+  .ctl small { font-size:11px; color:var(--dim); min-height:1.2em; white-space:nowrap }
+  .ctl.on { background:#173226; border-color:var(--green) } .ctl.on b { color:var(--green) }
+  .ctl.alarm { background:#3a1d1d; border-color:var(--red) } .ctl.alarm b { color:var(--red) }
+  .ctl:hover { filter:brightness(1.15) }
+
+  #drawer { position:fixed; top:0; right:0; bottom:0; width:min(420px,100%); background:var(--card); border-left:1px solid var(--line); transform:translateX(100%); transition:transform .2s; padding:18px 20px; overflow:auto; z-index:5 }
+  #drawer.open { transform:none }
+  #drawer h2 { margin:0 0 14px; font-size:18px; display:flex; justify-content:space-between; align-items:center }
+  #drawer h3 { margin:16px 0 6px; font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em }
+  select { width:100%; background:var(--card2); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font:inherit }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 0 }
+  .row button { background:var(--card2); border:1px solid var(--line); border-radius:8px; padding:3px 10px } .row button:hover { border-color:var(--blue) }
+  #log { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim); white-space:pre-wrap; max-height:32vh; overflow:auto }
+  #toast { position:fixed; left:50%; bottom:104px; transform:translateX(-50%); background:var(--card2); border:1px solid var(--line); border-radius:999px; padding:6px 14px; color:var(--yellow); opacity:0; transition:opacity .2s; pointer-events:none }
+  #toast.show { opacity:1 }
 </style>
 </head>
 <body>
 <header>
-  <code id="link"></code>
-  <button onclick="copyLink()">copy link</button>
+  <span class="pill"><code id="link"></code><button onclick="copyLink()">copy</button></span>
+  <span id="quality"><i></i><span id="qtext">connecting…</span></span>
+  <span id="relay"></span>
+  <span class="spacer"></span>
   <span class="dim" id="version"></span>
+  <button id="gear" title="settings" onclick="drawer.classList.toggle('open')">⚙</button>
 </header>
-<div id="update"></div>
-<div id="status"></div>
-<div class="tiles" id="tiles"></div>
-<div id="relays"></div>
-<div class="row" id="toggles"></div>
-<div class="row">
-  <span class="chip"><button onclick="act({Bitrate:-1})">−</button> bitrate <b id="bitrate"></b> kbps <button onclick="act({Bitrate:1})">+</button></span>
-</div>
-<div class="panels">
-  <div class="panel"><h3>input</h3><ul id="inputs"></ul></div>
-  <div class="panel"><h3>output</h3><ul id="outputs"></ul></div>
-  <div class="panel"><h3>tuning</h3><div id="knobs"></div></div>
-</div>
-<div id="notice"></div>
-<div id="log"></div>
+<div id="update"><div id="updateText"></div></div>
+<main>
+  <div id="empty">nobody here yet — send them the link</div>
+  <div class="cards" id="cards"></div>
+</main>
+<div id="bar"><div class="in" id="ctls"></div></div>
+<div id="toast"></div>
+<aside id="drawer">
+  <h2>settings <button onclick="drawer.classList.remove('open')">✕</button></h2>
+  <h3>microphone</h3><select id="inputs" onchange="act({Device:{Kind:'in',Name:this.value}})"></select>
+  <h3>speakers</h3><select id="outputs" onchange="act({Device:{Kind:'out',Name:this.value}})"></select>
+  <h3>bitrate</h3><div class="row"><span><b id="bitrate"></b> kbps</span><span><button onclick="act({Bitrate:-1})">−</button> <button onclick="act({Bitrate:1})">+</button></span></div>
+  <h3>echo</h3><div id="knobs"></div>
+  <h3>stats</h3><div class="dim" id="stats"></div>
+  <h3>log</h3><div id="log"></div>
+</aside>
 <script>
 const $ = id => document.getElementById(id);
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const levels = {}; // smoothed 0..1 per name, instant attack, slow release
-function level(name, db) {
-  const v = Math.max(0, Math.min(1, (db + 50) / 50)), cur = levels[name] || 0;
-  return levels[name] = v >= cur ? v : cur * 0.82;
-}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const talk = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-const rx = {}; // last RxBytes and time per name, for kbps
-function kbps(p) {
-  const now = performance.now(), last = rx[p.Name];
-  rx[p.Name] = { b: p.RxBytes, t: now, k: last ? (p.RxBytes - last.b) * 8 / Math.max(1, now - last.t) : 0 };
-  return last && now - last.t < 2000 ? rx[p.Name].k = (rx[p.Name].k * 0.3 + last.k * 0.7) : 0;
-}
 
 async function act(a) {
   const r = await fetch('/act', { method: 'POST', body: JSON.stringify(a) });
   const { notice } = await r.json();
-  if (notice) { $('notice').textContent = '▸ ' + notice; setTimeout(() => $('notice').textContent = '', 4000); }
+  if (notice) toast(notice);
 }
-function copyLink() { navigator.clipboard.writeText($('link').textContent).then(() => $('notice').textContent = '▸ link copied'); }
+let toastT;
+function toast(s) { $('toast').textContent = s; $('toast').classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => $('toast').classList.remove('show'), 2500); }
+function copyLink() { navigator.clipboard.writeText($('link').textContent).then(() => toast('link copied')); }
 
-let lastKey = '';
+// levels: instant attack, slow release, per name
+const levels = {};
+function level(name, db) { const v = Math.max(0, Math.min(1, (db + 50) / 50)), cur = levels[name] || 0; return levels[name] = v >= cur ? v : cur * 0.85; }
+// incoming kbps per name from cumulative bytes
+const rx = {};
+function kbps(p) {
+  const now = performance.now(), last = rx[p.Name];
+  const k = last ? (p.RxBytes - last.b) * 8 / Math.max(1, now - last.t) : 0;
+  rx[p.Name] = { b: p.RxBytes, t: now, k: last ? last.k * 0.8 + k * 0.2 : 0 };
+  return rx[p.Name].k;
+}
+
+// Cards are built once per person and updated in place, so a slider being
+// dragged is never rebuilt under the pointer.
+const cards = {};
+function card(p, me) {
+  let el = cards[p.Name];
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'card' + (me ? ' me' : '');
+    el.innerHTML = `<div class="avatar">${esc((p.Name[0] || '?').toUpperCase())}</div>
+      <div class="name">${esc(p.Name)}${me ? ' <small>you</small>' : `<small class="ver"></small>`}</div>
+      <div class="status"></div><div class="talk"></div>` +
+      (me ? '' : `<div class="vol"><input type="range" min="0" max="200"><span></span></div>`);
+    if (!me) {
+      const r = el.querySelector('input');
+      r.addEventListener('pointerdown', () => r.dataset.drag = 1);
+      r.addEventListener('input', () => r.nextElementSibling.textContent = r.value + '%');
+      r.addEventListener('change', () => { delete r.dataset.drag; act({ Peer: p.Name, Volume: +r.value }); });
+    }
+    cards[p.Name] = el;
+    $('cards').append(el);
+  }
+  const lv = level(p.Name, p.Level);
+  el.classList.toggle('speaking', lv > 0.2);
+  el.querySelector('.avatar').style.boxShadow = `0 0 0 ${(lv * 14).toFixed(1)}px var(--ring)`;
+  el.querySelector('.talk').textContent = talk(p.Talk);
+  return el;
+}
+function pill(text, cls) { return `<span class="p ${cls || ''}">${text}</span>`; }
+
+let ctlKey = '', drawerKey = '';
 function render(s) {
   $('link').textContent = s.Link;
   $('version').textContent = s.Version;
-  $('bitrate').textContent = s.Bitrate;
-  $('update').style.display = s.Update ? 'block' : 'none';
-  if (s.Update) $('update').textContent = `⬆ ${s.Update} available (you run ${s.Version}) — quit and run: yap update`;
+  $('updateText').style.display = s.Update ? 'block' : 'none';
+  if (s.Update) $('updateText').textContent = `⬆ ${s.Update} is out (you run ${s.Version}) — quit yap and run: yap update`;
 
-  const people = s.People || [];
-  let rxAll = 0, rtt = 0, jit = 0, drops = 0, viaRelay = 0;
-  const tiles = [selfTile(s)];
+  // people
+  const people = s.People || [], seen = { [s.Name]: 1 };
+  const meEl = card({ Name: s.Name, Level: s.Self.Level, Talk: s.Self.Talk }, true);
+  meEl.querySelector('.status').innerHTML = s.Self.Muted ? pill('● muted', 'red') : s.Self.PTT ? (s.Self.Talking ? pill('● talking', 'green') : pill('hold space to talk')) : pill(`tx ${s.Bitrate} kbps`);
+  let rxAll = 0, rtt = 0, jit = 0, drops = 0, via = 0, bad = 0;
   for (const p of people) {
-    rxAll += kbps(p); rtt = Math.max(rtt, p.RTT); jit = Math.max(jit, p.Jitter);
-    drops += p.Lost + p.Stall + p.Skip + p.Rebuf; if (p.Path.startsWith('via')) viaRelay++;
-    tiles.push(peerTile(p));
+    seen[p.Name] = 1;
+    const k = kbps(p); rxAll += k; rtt = Math.max(rtt, p.RTT); jit = Math.max(jit, p.Jitter);
+    drops += p.Lost + p.Stall + p.Skip + p.Rebuf; if (p.Path.startsWith('via')) via++;
+    if (p.NoReply || p.CantHear) bad++;
+    const el = card(p, false);
+    el.querySelector('.ver').textContent = p.Ver;
+    let st = pill('connecting…', 'yellow');
+    if (p.Connected) {
+      st = pill(`${p.Path === 'direct' ? '● direct' : '◐ ' + esc(p.Path)} · ${p.RTT >= 1 ? p.RTT.toFixed(0) + ' ms' : '<1 ms'}${k > 1 ? ' · ' + k.toFixed(0) + ' kbps' : ''}`);
+      if (p.NoReply) st = pill(`⚠ no reply ${p.NoReply.toFixed(0)}s`, 'red');
+      else if (p.CantHear) st = pill(`⚠ can't hear you`, 'red') + ' ' + st;
+      else if (p.Muted) st = pill('muted', 'red') + ' ' + st;
+    }
+    el.querySelector('.status').innerHTML = st;
+    const r = el.querySelector('input');
+    if (!r.dataset.drag) { r.value = p.Volume; r.nextElementSibling.textContent = p.Volume + '%'; }
   }
-  $('tiles').innerHTML = tiles.join('');
-  $('status').textContent = people.length
-    ? `tx ${s.Self.Muted ? 0 : s.Bitrate * people.length} kbps · rx ${rxAll.toFixed(0)} kbps · ping ${rtt.toFixed(0)} ms · jitter ${jit.toFixed(1)} ms · drops ${drops}${viaRelay ? ` · ${viaRelay} via relay` : ''}`
-    : 'nobody to talk to yet — send them the link';
-  $('relays').innerHTML = (s.Relays || []).map(r => `⇄ <b>${esc(r.Name)}</b> <span class="dim">${esc(r.Ver)} ${r.Connected ? esc(r.Path) + ' · ' + r.RTT.toFixed(0) + ' ms' : 'connecting…'}</span>`).join(' &nbsp; ');
+  for (const name in cards) if (!seen[name]) { cards[name].remove(); delete cards[name]; delete levels[name]; }
+  $('empty').style.display = people.length ? 'none' : 'block';
 
-  const key = JSON.stringify([s.Toggles, s.Knobs, s.Inputs, s.Outputs, s.Mic, s.Out]);
-  if (key !== lastKey) { // controls only re-render when they change, so clicks are not swallowed
-    lastKey = key;
-    $('toggles').innerHTML = s.Toggles.map(t => {
-      const i = t.Label.indexOf(t.Key), label = esc(t.Label.slice(0, i)) + '<b>' + esc(t.Key) + '</b>' + esc(t.Label.slice(i + 1));
-      return `<button class="chip ${t.On ? 'on' : 'off'} ${t.OffRed ? 'alarm' : ''}" onclick="act({Key:'${t.Key}'})"><span>${label}</span><span class="sw">${t.On ? '● on' : '○ off'}</span>${t.Live ? `<span class="dim">${esc(t.Live)}</span>` : ''}</button>`;
+  // header quality
+  const q = $('quality').querySelector('i');
+  q.className = people.length ? (bad || drops > 50 ? 'poor' : jit > 15 ? 'ok' : 'good') : '';
+  $('qtext').textContent = people.length ? `ping ${rtt.toFixed(0)} ms · jitter ${jit.toFixed(1)} ms · ${drops} drops${via ? ` · ${via} via relay` : ''}` : 'no one connected';
+  $('relay').innerHTML = (s.Relays || []).map(r => `⇄ relay ${r.Connected ? r.RTT.toFixed(0) + ' ms' : '<span class="yellow">connecting…</span>'}`).join(' · ');
+  $('stats').textContent = `tx ${s.Self.Muted ? 0 : s.Bitrate * people.length} kbps · rx ${rxAll.toFixed(0)} kbps · ` + people.map(p => `${p.Name}: lost ${p.Lost} stall ${p.Stall} skip ${p.Skip} rebuf ${p.Rebuf}`).join(' · ');
+
+  // control bar: rebuilt only when something in it changes
+  const ck = JSON.stringify(s.Toggles);
+  if (ck !== ctlKey) {
+    ctlKey = ck;
+    $('ctls').innerHTML = s.Toggles.map(t => {
+      const i = t.Label.indexOf(t.Key), label = esc(t.Label.slice(0, i)) + '<u>' + esc(t.Key) + '</u>' + esc(t.Label.slice(i + 1));
+      const cls = t.On ? 'on' : t.OffRed ? 'alarm' : '';
+      const live = t.Key === 'w' ? t.Live.replace(/^.*:/, ':') : t.Live; // the web address fits as its port
+      return `<button class="ctl ${cls}" onclick="act({Key:'${t.Key}'})"><b>${label}</b><small>${t.On ? esc(live || 'on') : 'off'}</small></button>`;
     }).join('');
-    const list = (id, names, cur, kind) => $(id).innerHTML = names.map(n => `<li class="${n === cur ? 'cur' : ''}" onclick='act({Device:{Kind:"${kind}",Name:${JSON.stringify(n)}}})'>${n === cur ? '● ' : '&nbsp;&nbsp; '}${esc(n || 'default')}</li>`).join('');
-    list('inputs', s.Inputs || [], s.Mic, 'in');
-    list('outputs', s.Outputs || [], s.Out, 'out');
-    $('knobs').innerHTML = s.Knobs.map((k, i) => `<div class="knob"><span>${esc(k.Name)}</span><span><button onclick="act({Knob:{I:${i},Dir:-1}})">◂</button> ${k.Value} ${k.Unit} <button onclick="act({Knob:{I:${i},Dir:1}})">▸</button></span></div>`).join('');
+  }
+  // drawer: rebuilt only when its contents change
+  const dk = JSON.stringify([s.Inputs, s.Outputs, s.Mic, s.Out, s.Bitrate, s.Knobs]);
+  if (dk !== drawerKey) {
+    drawerKey = dk;
+    const opts = (names, cur) => names.map(n => `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n || 'system default')}</option>`).join('');
+    $('inputs').innerHTML = opts(s.Inputs || [], s.Mic);
+    $('outputs').innerHTML = opts(s.Outputs || [], s.Out);
+    $('bitrate').textContent = s.Bitrate;
+    $('knobs').innerHTML = s.Knobs.map((k, i) => `<div class="row"><span>${esc(k.Name)}</span><span><button onclick="act({Knob:{I:${i},Dir:-1}})">−</button> ${k.Value} ${k.Unit} <button onclick="act({Knob:{I:${i},Dir:1}})">+</button></span></div>`).join('');
   }
   $('log').textContent = (s.Logs || []).join('\n');
 }
-function selfTile(s) {
-  const lv = level('(you)', s.Self.Level);
-  let head = '';
-  if (s.Self.Muted) head = '<span class="red">● MUTED</span>';
-  else if (s.Self.PTT) head = s.Self.Talking ? '<span class="green">● TALK</span>' : '<span class="dim">○ hold space</span>';
-  return `<div class="tile me ${lv > 0.2 ? 'speaking' : ''}"><div class="head"><span class="name">${esc(s.Name)} (you)</span>${head}</div>
-    <div class="meter"><i style="width:${lv * 100}%"></i></div><div class="foot"><span>tx ${s.Bitrate} kbps</span><span>${talk(s.Self.Talk)}</span></div></div>`;
-}
-function peerTile(p) {
-  const lv = level(p.Name, p.Level);
-  let status = '<span class="yellow">connecting…</span>';
-  if (p.Connected) {
-    status = `<span class="green">${p.Path === 'direct' ? '●' : '◐'}</span> <span class="dim">${p.RTT >= 1 ? p.RTT.toFixed(0) + ' ms' : '<1 ms'}</span>`;
-    if (p.NoReply) status = `<span class="red">⚠ no reply ${p.NoReply.toFixed(0)}s</span>`;
-    else if (p.CantHear) status = `<span class="red">⚠ can't hear you</span> ` + status;
-    else if (p.Muted) status = `<span class="red">muted</span> ` + status;
-  }
-  const k = rx[p.Name] ? rx[p.Name].k : 0;
-  return `<div class="tile ${lv > 0.2 ? 'speaking' : ''}"><div class="head"><span class="name">${esc(p.Name)} <span class="dim">${esc(p.Ver)}</span></span><span>${status}</span></div>
-    <div class="meter"><i style="width:${lv * 100}%"></i></div>
-    <div class="foot"><input type="range" min="0" max="200" value="${p.Volume}" oninput="this.nextElementSibling.textContent=this.value+'%'" onchange='act({Peer:${JSON.stringify(p.Name)},Volume:+this.value})'><span>${p.Volume}%</span>${k ? `<span>${k.toFixed(0)} kbps</span>` : ''}<span>${talk(p.Talk)}</span></div></div>`;
-}
+const drawer = $('drawer');
 const es = new EventSource('/events');
 es.onmessage = e => render(JSON.parse(e.data));
-es.onerror = () => { $('status').textContent = 'yap is not running — close this tab'; };
+es.onerror = () => { $('qtext').textContent = 'yap is not running'; $('quality').querySelector('i').className = 'poor'; };
 document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT') return;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
   if (e.key === ' ') { act({ Key: ' ' }); e.preventDefault(); }
   else if (/^[mdgealpw]$/.test(e.key)) act({ Key: e.key });
+  else if (e.key === 'Escape') drawer.classList.remove('open');
 });
 </script>
 </body>
