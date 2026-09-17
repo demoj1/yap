@@ -63,7 +63,7 @@ func (w *webServer) start() string {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if page, err := os.ReadFile(os.Getenv("YAP_WEB")); err == nil { // YAP_WEB=web/index.html: edit and reload, no rebuild
+		if page, err := os.ReadFile("web/index.html"); err == nil { // the working copy when run from the repo: edit, reload, no rebuild
 			rw.Write(page)
 			return
 		}
