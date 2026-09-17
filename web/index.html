@@ -63,7 +63,8 @@
   #toast.show { opacity:1 }
 
   .room { display:flex; flex-direction:column }
-  #chat { background:var(--card); border:1px solid var(--line); display:flex; flex-direction:column; min-height:160px; flex:1 }
+  #chat { min-height:160px; flex:1; margin-top:6px }
+  #chatbox { flex:1; min-width:0; min-height:0; background:var(--card); display:flex; flex-direction:column }
   #msgs { flex:1; overflow:auto; padding:3px 5px; display:flex; flex-direction:column; gap:0 }
   .msg { line-height:1.3; white-space:pre-wrap; word-break:break-word }
   .msg .t { color:var(--dim); font-size:11px; margin-right:4px } .msg .w { font-weight:600; margin-right:4px } .msg.me .w { color:var(--green) }
@@ -72,8 +73,10 @@
   #compose textarea { width:100%; resize:none; background:var(--card2); color:var(--fg); border:1px solid var(--line); padding:2px 4px; font:inherit; min-height:24px; max-height:120px; display:block }
   #compose small { color:var(--dim); font-size:11px }
   #compose label { float:right; cursor:pointer; padding:0 4px } #compose label:hover { background:var(--card2) }
-  #screens { display:flex; gap:6px; margin-top:6px; padding:4px; background:var(--card); border:1px solid var(--line); overflow-x:auto; align-items:center } #screens:not(:has(.screen)) { display:none }
-  #screens b { writing-mode:vertical-rl; transform:rotate(180deg); font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em }
+  .group { display:flex; gap:6px; padding:4px; border:1px solid var(--line); align-items:stretch; min-width:0 }
+  .group > b { flex:none; align-self:center; writing-mode:vertical-rl; transform:rotate(180deg); font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em }
+  #people > div { flex:1; min-width:0 }
+  #screens { margin-top:6px; overflow-x:auto } #screens:not(:has(.screen)) { display:none }
   .screen { position:relative; flex:none; background:#000; border:1px solid var(--line); cursor:zoom-in }
   .screen canvas { display:block; height:20vh; width:auto } .screen:fullscreen canvas { max-height:100vh; width:100vw; height:100vh; object-fit:contain }
   .screen span { position:absolute; left:4px; top:2px; font-size:11px; color:#fff; background:rgba(0,0,0,.5); padding:0 4px }
@@ -96,14 +99,16 @@
 <div id="update"><div id="updateText"></div></div>
 <main class="room">
   <div>
-    <div id="empty">nobody here yet — send them the link, or join theirs: <input id="joinlink" placeholder="yap://…" size="34"> <button onclick="joinRoom()">join</button></div>
-    <div class="cards" id="cards"></div>
-    <div id="screens"><b>screens</b></div>
+    <div id="people" class="group"><b>people</b><div>
+      <div id="empty">nobody here yet — send them the link, or join theirs: <input id="joinlink" placeholder="yap://…" size="34"> <button onclick="joinRoom()">join</button></div>
+      <div class="cards" id="cards"></div>
+    </div></div>
+    <div id="screens" class="group"><b>screens</b></div>
   </div>
-  <div id="chat">
+  <div id="chat" class="group"><b>chat</b><div id="chatbox">
     <div id="msgs"></div>
     <div id="compose"><textarea id="say" rows="1" placeholder="say something…"></textarea><small>enter sends · shift+enter new line · paste or drop files</small><label for="pick" title="send a file">📎</label><input type="file" id="pick" multiple hidden></div>
-  </div>
+  </div></div>
 </main>
 <div id="zoom"><img alt=""></div>
 <div id="bar"><div class="in" id="ctls"></div></div>
