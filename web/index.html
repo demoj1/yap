@@ -146,6 +146,18 @@ async function act(a) {
   const { notice } = await r.json();
   if (notice) toast(notice);
 }
+// press flips a bar button on the spot and holds it until yap confirms,
+// so a slow answer never reads as "did not press" (and a second click
+// never flips it back by accident).
+async function press(b, key) {
+  if (b.dataset.want) return;
+  const on = !b.classList.contains('on');
+  b.dataset.want = String(on);
+  b.className = 'ctl ' + (on ? 'on' : '');
+  b.lastChild.textContent = '…';
+  try { await act({ Key: key }); } catch (e) {}
+  setTimeout(() => delete b.dataset.want, 1500); // safety: the snapshot normally clears it sooner
+}
 let toastT;
 function toast(s) { $('toast').textContent = s; $('toast').classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => $('toast').classList.remove('show'), 2500); }
 function copyLink() { navigator.clipboard.writeText($('link').textContent).then(() => toast('link copied')); }
@@ -248,11 +260,13 @@ function render(s) {
     ctlKey = ck;
     $('ctls').innerHTML = s.Toggles.map(t => {
       const i = t.Label.indexOf(t.Key), label = esc(t.Label.slice(0, i)) + '<u>' + esc(t.Key) + '</u>' + esc(t.Label.slice(i + 1));
-      return `<button class="ctl" data-key="${t.Key}" onclick="act({Key:'${t.Key}'})"><b>${label}</b><small></small></button>`;
+      return `<button class="ctl" data-key="${t.Key}" onclick="press(this,'${t.Key}')"><b>${label}</b><small></small></button>`;
     }).join('') + `<button class="ctl" data-key="share" onclick="toggleShare()"><b>share <u>v</u>ideo</b><small></small></button>`;
   }
   for (const t of s.Toggles.concat([{ Key: 'share', On: !!share, Live: 'screen' }])) {
     const b = $('ctls').querySelector(`[data-key="${t.Key}"]`), live = t.Key === 'w' ? t.Live.replace(/^.*:/, ':') : t.Live;
+    if (b.dataset.want && b.dataset.want !== String(t.On)) continue; // pressed, yap has not caught up yet: keep the pressed look
+    delete b.dataset.want;
     const cls = 'ctl ' + (t.On ? 'on' : t.OffRed ? 'alarm' : ''), txt = t.On ? (live || 'on') : 'off';
     if (b.className !== cls) b.className = cls;
     if (b.lastChild.textContent !== txt) b.lastChild.textContent = txt;
