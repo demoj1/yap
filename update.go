@@ -102,15 +102,19 @@ func checkUpdate() string {
 // restart replaces this process with the (freshly updated) executable,
 // same arguments, so the user lands back in the same room. Windows cannot
 // exec in place: there a new process is started and this one exits.
-func restart() error {
+func restart() error { return restartWith(os.Args[1:]...) }
+
+// restartWith replaces this process with the same binary run with args.
+func restartWith(args ...string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	if err := syscall.Exec(exe, os.Args, os.Environ()); err == nil || runtime.GOOS != "windows" {
+	argv := append([]string{os.Args[0]}, args...)
+	if err := syscall.Exec(exe, argv, os.Environ()); err == nil || runtime.GOOS != "windows" {
 		return err
 	}
-	p, err := os.StartProcess(exe, os.Args, &os.ProcAttr{Files: []*os.File{os.Stdin, os.Stdout, os.Stderr}})
+	p, err := os.StartProcess(exe, argv, &os.ProcAttr{Files: []*os.File{os.Stdin, os.Stdout, os.Stderr}})
 	if err != nil {
 		return err
 	}

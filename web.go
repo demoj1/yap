@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -198,6 +201,7 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 		Chat    string
 		Theme   string
 		Share   *bool
+		Join    string // a link: leave this room and restart into that one
 	}
 	if r.Method != "POST" || json.NewDecoder(r.Body).Decode(&a) != nil {
 		http.Error(rw, "bad request", 400)
@@ -238,6 +242,22 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	case a.Share != nil:
 		n.ctl.sharing.Store(*a.Share)
 		n.sendState()
+	case a.Join != "":
+		l, err := parseLink(strings.TrimSpace(a.Join))
+		if err != nil {
+			notice = "that is not a yap link"
+			break
+		}
+		if l.String() == n.link.String() {
+			notice = "you are already in that room"
+			break
+		}
+		s := l.String()
+		n.rejoin.Store(&s)
+		notice = "joining " + s + " — the page reconnects in a moment"
+		if n.stop != nil {
+			go n.stop()
+		}
 	}
 	json.NewEncoder(rw).Encode(map[string]string{"notice": notice})
 }
@@ -389,4 +409,21 @@ func (l *logRing) tail(n int) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string(nil), l.lines[max(0, len(l.lines)-n):]...)
+}
+
+// openBrowser shows url in the default browser; on Windows, where a
+// terminal is a poor home, the page is the way to use yap.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Println("browser:", err)
+	}
 }

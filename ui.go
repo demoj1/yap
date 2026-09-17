@@ -96,6 +96,11 @@ type ui struct {
 	prog *tea.Program
 }
 
+// quitMsg ends the screen from outside (the web page asked to join another room).
+type quitMsg struct{}
+
+func (u *ui) Quit() { u.prog.Send(quitMsg{}) }
+
 type model struct {
 	n        *node
 	logPath  string
@@ -295,6 +300,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(tick, func(t time.Time) tea.Msg { return tickMsg(t) })
 	case noticeMsg:
 		m.notice, m.noticeAt = string(msg), m.frame
+	case quitMsg:
+		return m, tea.Quit
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:

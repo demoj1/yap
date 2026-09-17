@@ -95,7 +95,7 @@
 <div id="update"><div id="updateText"></div></div>
 <main class="room">
   <div>
-    <div id="empty">nobody here yet — send them the link</div>
+    <div id="empty">nobody here yet — send them the link, or join theirs: <input id="joinlink" placeholder="yap://…" size="34"> <button onclick="joinRoom()">join</button></div>
     <div class="cards" id="cards"></div>
     <div id="screens"></div>
   </div>
@@ -109,6 +109,7 @@
 <div id="toast"></div>
 <aside id="drawer">
   <h2>settings <button onclick="drawer.classList.remove('open')">✕</button></h2>
+  <h3>room</h3><div class="row"><input id="joinlink2" placeholder="yap://… to join another room" style="flex:1"><button onclick="joinRoom('joinlink2')">join</button></div>
   <h3>microphone</h3><select id="inputs" onchange="act({Device:{Kind:'in',Name:this.value}})"></select>
   <h3>speakers</h3><select id="outputs" onchange="act({Device:{Kind:'out',Name:this.value}})"></select>
   <h3>bitrate</h3><div class="row"><span><b id="bitrate"></b> kbps</span><span><button onclick="act({Bitrate:-1})">−</button> <button onclick="act({Bitrate:1})">+</button></span></div>
@@ -419,6 +420,15 @@ const drawer = $('drawer');
 const es = new EventSource('/events');
 es.onmessage = e => render(JSON.parse(e.data));
 es.onerror = () => { $('qtext').textContent = 'yap is not running'; $('quality').querySelector('i').className = 'poor'; };
+// joining another room restarts yap: the page waits for it to come back
+function joinRoom(id) {
+  const link = $(id || 'joinlink').value.trim();
+  if (!link) return;
+  act({ Join: link });
+  let down = false; // first the old process goes away, then the new one answers
+  const back = setInterval(() => fetch('/events', { method: 'HEAD' }).then(() => { if (down) { clearInterval(back); location.reload(); } }).catch(() => { down = true; }), 700);
+}
+document.querySelectorAll('#joinlink, #joinlink2').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(i.id); }));
 document.addEventListener('keydown', e => {
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === ' ') { act({ Key: ' ' }); e.preventDefault(); }

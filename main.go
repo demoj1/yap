@@ -168,6 +168,9 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stderr, logFile, n.logs))
 	if set.Web {
 		n.web.start()
+		if runtime.GOOS == "windows" { // no terminal worth the name there: the page is the way in
+			openBrowser(n.web.url())
+		}
 	}
 	log.Println("audio:", n.audio.describe())
 	go func() { // never blocks startup; the TUI asks, the log keeps it
@@ -179,26 +182,41 @@ func main() {
 	log.Printf("buffers: jitter %d–%d frames (%d–%d ms) · playback %d frames · peer timeout %s",
 		minPrebuf, maxPrebuf, minPrebuf*20, maxPrebuf*20, playTarget, peerTimeout)
 
+	wantUpdate := false
 	if *plain {
 		fmt.Printf("\n  %s\n\n", n.link)
-		n.run()
-		return
+		done := make(chan struct{})
+		n.stop = func() { close(done) }
+		go n.run()
+		<-done
+	} else {
+		notice := ""
+		if os.Args[1] == "listen" { // the host's link is what friends need: hand it over right away
+			copyToClipboard(n.link.String())
+			notice = "your link is in the clipboard — send it to friends, they run: yap join <link>"
+			n.system("%s", notice)
+		}
+		ui := newUI(n, logPath, notice)
+		n.stop = ui.Quit
+		log.SetOutput(io.MultiWriter(logFile, n.logs))
+		go n.run()
+		if wantUpdate, err = ui.Run(); err != nil {
+			log.Fatal(err)
+		}
 	}
-	notice := ""
-	if os.Args[1] == "listen" { // the host's link is what friends need: hand it over right away
-		copyToClipboard(n.link.String())
-		notice = "your link is in the clipboard — send it to friends, they run: yap join <link>"
-		n.system("%s", notice)
-	}
-	ui := newUI(n, logPath, notice)
-	log.SetOutput(io.MultiWriter(logFile, n.logs))
-	go n.run()
-	wantUpdate, err := ui.Run()
-	if err != nil {
-		log.Fatal(err)
+	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+	if l := n.rejoin.Load(); l != nil { // the page asked for another room: come back as a joiner there
+		n.audio.Close()
+		args := []string{"join", "-name", *name}
+		if *plain {
+			args = append(args, "-plain")
+		}
+		args = append(args, *l) // flags first: the flag parser stops at the link
+		if err := restartWith(args...); err != nil {
+			log.Fatal("restart: ", err)
+		}
 	}
 	if wantUpdate { // chosen in the TUI: swap the binary and come back into the same room
-		log.SetOutput(io.MultiWriter(os.Stderr, logFile))
 		n.audio.Close()
 		if err := selfUpdate(); err != nil {
 			log.Fatal("update: ", err)

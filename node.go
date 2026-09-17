@@ -48,7 +48,9 @@ type node struct {
 	videoMu  sync.Mutex
 	videoOut chan videoFrame // our screen, frame by frame, to everyone
 	videoSeq uint32
-	keyReq   atomic.Uint32 // bumped when a viewer asks for a key frame; the browser watches it
+	keyReq   atomic.Uint32          // bumped when a viewer asks for a key frame; the browser watches it
+	rejoin   atomic.Pointer[string] // a link the page asked to join: main restarts into it once the screen is down
+	stop     func()                 // asks the screen (or the plain loop) to end; set by main
 	link     link
 	id       []byte // random per run; orders the pair direction bit
 	nonce    []byte // random per run; halves of every pair key
