@@ -242,8 +242,8 @@ const say = $('say');
 say.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { // shift+enter is a new line
     e.preventDefault();
-    const text = say.value.trim();
-    if (text) act({ Chat: text });
+    const text = say.value;
+    if (text.trim()) act({ Chat: text });
     say.value = ''; say.style.height = '';
   }
 });

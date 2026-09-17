@@ -298,7 +298,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
-		if m.typing {
+		if m.typing || msg.Paste { // pasting opens the chat line by itself
+			m.typing = true
 			return m.typeKey(msg)
 		}
 		return m.act(msg.String())
@@ -334,7 +335,7 @@ func (m model) typeKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input += "\n"
 			break
 		}
-		m.n.say(strings.TrimSpace(m.input))
+		m.n.say(m.input)
 		m.typing, m.input = false, ""
 	case tea.KeyCtrlJ:
 		m.input += "\n"
@@ -342,8 +343,10 @@ func (m model) typeKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r := []rune(m.input); len(r) > 0 {
 			m.input = string(r[:len(r)-1])
 		}
-	case tea.KeyRunes, tea.KeySpace:
-		m.input += k.String()
+	case tea.KeySpace:
+		m.input += " "
+	case tea.KeyRunes: // typed or pasted (a paste keeps its line breaks)
+		m.input += string(k.Runes)
 	}
 	return m, nil
 }

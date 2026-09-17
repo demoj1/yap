@@ -141,7 +141,7 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	case a.Bitrate != 0:
 		notice = n.nudgeBitrate(a.Bitrate)
 	case a.Chat != "":
-		n.say(strings.TrimSpace(a.Chat))
+		n.say(a.Chat)
 	}
 	json.NewEncoder(rw).Encode(map[string]string{"notice": notice})
 }
