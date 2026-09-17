@@ -114,6 +114,7 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 		Knob    *struct{ I, Dir int }
 		Bitrate int
 		Chat    string
+		Theme   string
 	}
 	if r.Method != "POST" || json.NewDecoder(r.Body).Decode(&a) != nil {
 		http.Error(rw, "bad request", 400)
@@ -142,6 +143,9 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 		notice = n.nudgeBitrate(a.Bitrate)
 	case a.Chat != "":
 		n.say(a.Chat)
+	case a.Theme != "":
+		n.set.Theme = a.Theme
+		n.set.save()
 	}
 	json.NewEncoder(rw).Encode(map[string]string{"notice": notice})
 }
@@ -159,6 +163,7 @@ func (n *node) peerByName(name string) *peer {
 // the styling.
 type snapshot struct {
 	Version, Link, Name, Update string
+	Theme                       string // "light", "dark" or "" for the system's
 	Self                        selfJSON
 	People, Relays              []peerJSON
 	Toggles                     []toggleJSON
@@ -208,7 +213,7 @@ type knobJSON struct {
 
 func (n *node) snapshot() snapshot {
 	s := snapshot{Version: version, Link: n.link.String(), Name: n.name, Bitrate: n.ctl.bitrate.Load(),
-		Mic: n.audio.mic, Out: n.audio.out}
+		Mic: n.audio.mic, Out: n.audio.out, Theme: n.set.Theme}
 	if tag := n.update.Load(); tag != nil {
 		s.Update = *tag
 	}
