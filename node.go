@@ -45,6 +45,10 @@ type node struct {
 	chat     chat                        // what people wrote and what happened
 	chatSeq  atomic.Uint32               // id of our last chat message
 	files    *files                      // files on their way in and out
+	videoMu  sync.Mutex
+	videoOut chan videoFrame // our screen, frame by frame, to everyone
+	videoSeq uint32
+	keyReq   atomic.Uint32 // bumped when a viewer asks for a key frame; the browser watches it
 	link     link
 	id       []byte // random per run; orders the pair direction bit
 	nonce    []byte // random per run; halves of every pair key
@@ -554,10 +558,22 @@ func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 		if !n.relay {
 			n.gotFile(p, plain)
 		}
+	case typVideo:
+		p.accept(from, 0, nil)
+		if !n.relay {
+			n.gotVideo(p, plain)
+		}
 	case typState:
 		p.accept(from, 0, nil)
 		if len(plain) >= 2 {
 			p.muted.Store(plain[1]&stateMuted != 0)
+			if sharing := plain[1]&stateSharing != 0; p.sharing.Swap(sharing) != sharing {
+				if sharing {
+					n.system("%s is sharing their screen — watch it on the web page", p.name)
+				} else {
+					n.system("%s stopped sharing", p.name)
+				}
+			}
 		}
 		if len(plain) >= 3 { // v0.8.4+: they also say whether our packets reach them
 			p.hearsUs.Store(plain[2]&stateHears != 0)
@@ -576,6 +592,9 @@ func (n *node) sendState() {
 	var flags byte
 	if n.ctl.silenced() {
 		flags |= stateMuted
+	}
+	if n.ctl.sharing.Load() {
+		flags |= stateSharing
 	}
 	for _, p := range n.people() {
 		if !p.connected() {

@@ -72,6 +72,10 @@
   #compose textarea { width:100%; resize:none; background:var(--card2); color:var(--fg); border:1px solid var(--line); padding:2px 4px; font:inherit; min-height:24px; max-height:120px; display:block }
   #compose small { color:var(--dim); font-size:11px }
   #compose label { float:right; cursor:pointer; padding:0 4px } #compose label:hover { background:var(--card2) }
+  #screens { display:flex; flex-wrap:wrap; gap:6px } #screens:empty { display:none }
+  .screen { position:relative; background:#000; border:1px solid var(--line); margin-top:6px; cursor:zoom-in }
+  .screen canvas { display:block; max-width:100%; max-height:50vh } .screen:fullscreen canvas { max-height:100vh; width:100vw; height:100vh; object-fit:contain }
+  .screen span { position:absolute; left:4px; top:2px; font-size:11px; color:#fff; background:rgba(0,0,0,.5); padding:0 4px }
   .pic { display:block; max-width:min(100%,420px); max-height:220px; border:1px solid var(--line); margin-top:2px }
   .file { color:var(--blue) }
   #zoom { position:fixed; inset:0; background:rgba(0,0,0,.85); display:none; place-items:center; z-index:9; cursor:zoom-out }
@@ -93,6 +97,7 @@
   <div>
     <div id="empty">nobody here yet — send them the link</div>
     <div class="cards" id="cards"></div>
+    <div id="screens"></div>
   </div>
   <div id="chat">
     <div id="msgs"></div>
@@ -177,6 +182,8 @@ function card(p, me) {
   return el;
 }
 function pill(text, cls) { return `<span class="p ${cls || ''}">${text}</span>`; }
+// status lines carry buttons; rebuild only on change so a click is never lost to a redraw
+function setStatus(el, html) { const st = el.querySelector('.status'); if (st.dataset.h !== html) { st.dataset.h = html; st.innerHTML = html; } }
 
 let ctlKey = '', drawerKey = '';
 let themeSeen = '';
@@ -190,7 +197,9 @@ function render(s) {
   // people
   const people = s.People || [], seen = { [s.Name]: 1 };
   const meEl = card({ Name: s.Name, Level: s.Self.Level, Talk: s.Self.Talk }, true);
-  meEl.querySelector('.status').innerHTML = s.Self.Muted ? pill('● muted', 'red') : s.Self.PTT ? (s.Self.Talking ? pill('● talking', 'green') : pill('hold space to talk')) : pill(`tx ${s.Bitrate} kbps`);
+  watchers = s.Self.Watchers;
+  setStatus(meEl, (share ? pill(`▶ sharing · ${watchers} watching`, 'green') + ' ' : '') + (s.Self.Muted ? pill('● muted', 'red') : s.Self.PTT ? (s.Self.Talking ? pill('● talking', 'green') : pill('hold space to talk')) : pill(`tx ${s.Bitrate} kbps`)));
+  if (s.Self.KeyReq !== keyReqSeen) { keyReqSeen = s.Self.KeyReq; if (share) share.wantKey = true; }
   const mg = meEl.querySelector('input');
   if (!mg.dataset.drag) { mg.value = s.Self.Gain; mg.nextElementSibling.textContent = s.Self.Gain + '%'; }
   let rxAll = 0, rtt = 0, jit = 0, drops = 0, via = 0, bad = 0;
@@ -208,7 +217,11 @@ function render(s) {
       else if (p.CantHear) st = pill(`⚠ can't hear you`, 'red') + ' ' + st;
       else if (p.Muted) st = pill('muted', 'red') + ' ' + st;
     }
-    el.querySelector('.status').innerHTML = st;
+    if (p.Sharing) {
+      const n = JSON.stringify(p.Name);
+      st = pill('▶ sharing', 'green') + (screens[p.Name] ? ` <button onclick='unwatch(${n})'>✕ stop</button>` : ` <button onclick='watch(${n})'>▶ watch</button>`) + ` <button onclick='pip(${n})'>⧉ pip</button> ` + st;
+    } else if (screens[p.Name]) unwatch(p.Name);
+    setStatus(el, st);
     const r = el.querySelector('input');
     if (!r.dataset.drag) { r.value = p.Volume; r.nextElementSibling.textContent = p.Volume + '%'; }
   }
@@ -223,7 +236,7 @@ function render(s) {
   $('stats').textContent = `tx ${s.Self.Muted ? 0 : s.Bitrate * people.length} kbps · rx ${rxAll.toFixed(0)} kbps · ` + people.map(p => `${p.Name}: lost ${p.Lost} stall ${p.Stall} skip ${p.Skip} rebuf ${p.Rebuf}`).join(' · ');
 
   // control bar: rebuilt only when something in it changes
-  const ck = JSON.stringify(s.Toggles);
+  const ck = JSON.stringify(s.Toggles) + (share ? '+share' : '');
   if (ck !== ctlKey) {
     ctlKey = ck;
     $('ctls').innerHTML = s.Toggles.map(t => {
@@ -231,7 +244,7 @@ function render(s) {
       const cls = t.On ? 'on' : t.OffRed ? 'alarm' : '';
       const live = t.Key === 'w' ? t.Live.replace(/^.*:/, ':') : t.Live; // the web address fits as its port
       return `<button class="ctl ${cls}" onclick="act({Key:'${t.Key}'})"><b>${label}</b><small>${t.On ? esc(live || 'on') : 'off'}</small></button>`;
-    }).join('');
+    }).join('') + `<button class="ctl ${share ? 'on' : ''}" onclick="toggleShare()"><b>share <u>v</u>ideo</b><small>${share ? 'screen' : 'off'}</small></button>`;
   }
   // drawer: rebuilt only when its contents change
   const dk = JSON.stringify([s.Inputs, s.Outputs, s.Mic, s.Out, s.Bitrate, s.Knobs]);
@@ -292,6 +305,114 @@ say.addEventListener('paste', e => { const fs = [...e.clipboardData.files]; if (
 $('chat').addEventListener('dragover', e => e.preventDefault());
 $('chat').addEventListener('drop', e => { e.preventDefault(); upload([...e.dataTransfer.files]); });
 $('pick').addEventListener('change', e => { upload([...e.target.files]); e.target.value = ''; });
+// Screen sharing: the browser captures and encodes (VP8, 15 fps, 720p max),
+// every frame goes to yap which fans it out; a viewer's browser decodes.
+const shareFPS = 15, shareKbps = 1500;
+let share = null, keyReqSeen = 0, watchers = 0;
+async function toggleShare() {
+  if (share) { stopShare(); return; }
+  if (!window.VideoEncoder) return toast('this browser has no WebCodecs — use Chrome/Brave/Edge or Firefox 130+');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: shareFPS, width: { max: 1280 }, height: { max: 720 } }, audio: false });
+  } catch (e) { return; }
+  const video = document.createElement('video');
+  video.srcObject = stream; video.muted = true;
+  await video.play();
+  const enc = new VideoEncoder({ output: sendFrame, error: e => { toast('encoder: ' + e.message); stopShare(); } });
+  share = { stream, video, enc, w: 0, h: 0, n: 0, wantKey: true };
+  act({ Share: true }); // everyone learns we share; frames go to whoever asks
+  stream.getVideoTracks()[0].onended = stopShare; // the browser's own "stop sharing"
+  share.timer = setInterval(() => {
+    if (!share || !watchers || enc.encodeQueueSize > 2) return; // nobody watching, or encoder behind: skip this one
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w) return;
+    if (w !== share.w || h !== share.h) { // first frame or the window was resized
+      share.w = w; share.h = h; share.wantKey = true;
+      enc.configure({ codec: 'vp8', width: w, height: h, bitrate: shareKbps * 1000, framerate: shareFPS, latencyMode: 'realtime' });
+    }
+    const frame = new VideoFrame(video, { timestamp: Math.round(performance.now() * 1000) });
+    enc.encode(frame, { keyFrame: share.wantKey || share.n % (shareFPS * 2) === 0 });
+    frame.close(); share.wantKey = false; share.n++;
+  }, 1000 / shareFPS);
+  ctlKey = '';
+}
+function sendFrame(chunk) {
+  const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf);
+  fetch('/video?key=' + (chunk.type === 'key' ? 1 : 0), { method: 'POST', body: buf }).catch(() => {});
+}
+function stopShare() {
+  if (!share) return;
+  clearInterval(share.timer);
+  try { share.enc.close(); } catch (e) {}
+  share.stream.getTracks().forEach(t => t.stop());
+  share = null; ctlKey = '';
+  act({ Share: false });
+}
+// watching: one canvas per person sharing, frames pulled from /video/<name>
+const screens = {};
+// pip pops someone's screen out into a picture-in-picture window (the
+// canvas is turned into a stream for a hidden <video>).
+async function pip(name) {
+  if (!screens[name]) watch(name);
+  const w = screens[name], canvas = w.el.querySelector('canvas');
+  if (!w.pipVideo) {
+    w.pipVideo = document.createElement('video');
+    w.pipVideo.muted = true;
+    w.pipVideo.srcObject = canvas.captureStream(shareFPS);
+    w.pipVideo.play().catch(() => {});
+  }
+  if (!w.pipVideo.requestPictureInPicture) return toast('no picture-in-picture in this browser');
+  try {
+    if (!w.pipVideo.videoWidth) await new Promise(r => w.pipVideo.addEventListener('loadedmetadata', r, { once: true }));
+    await w.pipVideo.requestPictureInPicture();
+  } catch (e) { toast('pip: ' + e.message); }
+}
+async function watch(name) {
+  if (screens[name]) return;
+  const el = document.createElement('div');
+  el.className = 'screen';
+  el.innerHTML = `<canvas></canvas><span>${esc(name)}</span>`;
+  el.onclick = () => document.fullscreenElement ? document.exitFullscreen() : el.requestFullscreen();
+  $('screens').append(el);
+  const canvas = el.querySelector('canvas'), ctx = canvas.getContext('2d');
+  const abort = new AbortController();
+  const w = screens[name] = { el, abort, synced: false };
+  const dec = new VideoDecoder({
+    output: f => { if (canvas.width !== f.displayWidth) { canvas.width = f.displayWidth; canvas.height = f.displayHeight; } ctx.drawImage(f, 0, 0); f.close(); },
+    error: () => { w.synced = false; try { dec.reset(); dec.configure({ codec: 'vp8' }); } catch (e) {} },
+  });
+  dec.configure({ codec: 'vp8' });
+  w.dec = dec;
+  try {
+    const r = await fetch('/video/' + encodeURIComponent(name), { signal: abort.signal });
+    const reader = r.body.getReader();
+    let buf = new Uint8Array(0), n = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const joined = new Uint8Array(buf.length + value.length); joined.set(buf); joined.set(value, buf.length); buf = joined;
+      for (;;) {
+        if (buf.length < 5) break;
+        const len = (buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3]) >>> 0, key = buf[4] === 1;
+        if (buf.length < 5 + len) break;
+        const data = buf.slice(5, 5 + len); buf = buf.slice(5 + len);
+        if (!w.synced && !key) continue;
+        w.synced = true;
+        if (dec.state === 'configured') dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: n++ * 1e6 / shareFPS, data }));
+      }
+    }
+  } catch (e) {}
+  unwatch(name);
+}
+function unwatch(name) {
+  const w = screens[name];
+  if (!w) return;
+  delete screens[name];
+  w.abort.abort();
+  try { w.dec.close(); } catch (e) {}
+  w.el.remove();
+}
 function zoom(url) { $('zoom').querySelector('img').src = url; $('zoom').classList.add('show'); return false; }
 $('zoom').addEventListener('click', () => $('zoom').classList.remove('show'));
 const drawer = $('drawer');
@@ -302,6 +423,7 @@ document.addEventListener('keydown', e => {
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === ' ') { act({ Key: ' ' }); e.preventDefault(); }
   else if (/^[mdgealpws]$/.test(e.key)) act({ Key: e.key });
+  else if (e.key === 'v') toggleShare();
   else if (e.key === 't' || e.key === 'Enter') { say.focus(); e.preventDefault(); }
   else if (e.key === 'Escape') { drawer.classList.remove('open'); $('zoom').classList.remove('show'); }
 });

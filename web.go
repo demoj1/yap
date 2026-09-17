@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,6 +74,8 @@ func (w *webServer) start() string {
 	mux.HandleFunc("/events", w.events)
 	mux.HandleFunc("/act", w.act)
 	mux.HandleFunc("/upload", w.upload)
+	mux.HandleFunc("/video", w.videoIn)
+	mux.HandleFunc("/video/", w.videoOut)
 	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(w.n.files.dir))))
 	w.ln, w.srv = ln, &http.Server{Handler: mux}
 	go w.srv.Serve(ln)
@@ -123,6 +126,65 @@ func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// videoIn takes one encoded frame of our screen from the page (?key=1 for
+// a key frame) and sends it to everyone.
+func (w *webServer) videoIn(rw http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, 4<<20))
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	w.n.sendVideo(data, r.URL.Query().Get("key") == "1")
+}
+
+// videoOut streams someone's screen to the page as it comes in:
+// [len u32][flags u8][frame] per frame, for as long as the page reads.
+func (w *webServer) videoOut(rw http.ResponseWriter, r *http.Request) {
+	p := w.n.peerByName(strings.TrimPrefix(r.URL.Path, "/video/"))
+	if p == nil {
+		http.NotFound(rw, r)
+		return
+	}
+	rx := p.video.Load()
+	if rx == nil {
+		rx = newVideoRx()
+		p.video.Store(rx)
+	}
+	fl, _ := rw.(http.Flusher)
+	rw.Header().Set("Content-Type", "application/octet-stream")
+	rw.Header().Set("Cache-Control", "no-cache")
+	head := make([]byte, 5)
+	for len(rx.out) > 0 { // whatever piled up before the page started watching is stale
+		<-rx.out
+	}
+	w.n.sendTo(p, videoCtl(videoFlagWant)) // frames come only while someone says they watch
+	beat := time.NewTicker(time.Second)
+	defer beat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-beat.C:
+			w.n.sendTo(p, videoCtl(videoFlagWant))
+		case f := <-rx.out:
+			binary.BigEndian.PutUint32(head, uint32(len(f.data)))
+			head[4] = 0
+			if f.key {
+				head[4] = videoFlagKey
+			}
+			if _, err := rw.Write(head); err != nil {
+				return
+			}
+			if _, err := rw.Write(f.data); err != nil {
+				return
+			}
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}
+}
+
 // act performs one action from the page and answers with the notice.
 func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	var a struct {
@@ -135,6 +197,7 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 		Bitrate int
 		Chat    string
 		Theme   string
+		Share   *bool
 	}
 	if r.Method != "POST" || json.NewDecoder(r.Body).Decode(&a) != nil {
 		http.Error(rw, "bad request", 400)
@@ -172,6 +235,9 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	case a.Theme != "":
 		n.set.Theme = a.Theme
 		n.set.save()
+	case a.Share != nil:
+		n.ctl.sharing.Store(*a.Share)
+		n.sendState()
 	}
 	json.NewEncoder(rw).Encode(map[string]string{"notice": notice})
 }
@@ -213,6 +279,8 @@ type selfJSON struct {
 	Level               float64 // dBFS, -Inf when silent
 	Talk                int64   // ms
 	Gain                int     // mic gain, percent
+	KeyReq              uint32  // bumped when a viewer wants a key frame of our screen
+	Watchers            int     // people our screen goes to right now; 0 means don't bother encoding
 	Muted, PTT, Talking bool
 }
 
@@ -225,7 +293,7 @@ type peerJSON struct {
 	Level                    float64 // dBFS
 	Talk                     int64   // ms
 	Volume                   int32
-	Muted, CantHear          bool
+	Muted, CantHear, Sharing bool
 	NoReply                  float64 // s, 0 when fine
 	Lost, Stall, Skip, Rebuf uint64
 }
@@ -246,11 +314,11 @@ func (n *node) snapshot() snapshot {
 	if tag := n.update.Load(); tag != nil {
 		s.Update = *tag
 	}
-	s.Self = selfJSON{Level: dbJSON(n.micDB.Load()), Talk: n.talkMS.Load(), Gain: int(n.ctl.micGain.Load()), Muted: n.ctl.muted.Load(), PTT: n.ctl.ptt.Load(), Talking: n.ctl.talking()}
+	s.Self = selfJSON{Level: dbJSON(n.micDB.Load()), Talk: n.talkMS.Load(), Gain: int(n.ctl.micGain.Load()), KeyReq: n.keyReq.Load(), Watchers: n.watchers(), Muted: n.ctl.muted.Load(), PTT: n.ctl.ptt.Load(), Talking: n.ctl.talking()}
 	for _, p := range n.peerList() {
 		j := peerJSON{Name: p.name, Ver: verText(p), Connected: p.connected(), Path: "connecting",
 			RTT: float64(p.rttUS.Load()) / 1000, Jitter: float64(p.jitUS.Load()) / 1000, RxBytes: p.rxBytes.Load(),
-			Level: dbJSON(p.levelDB.Load()), Talk: p.talkMS.Load(), Volume: p.volume.Load(), Muted: p.muted.Load(),
+			Level: dbJSON(p.levelDB.Load()), Talk: p.talkMS.Load(), Volume: p.volume.Load(), Muted: p.muted.Load(), Sharing: p.sharingNow(),
 			Lost: p.jb.lost.Load(), Stall: p.jb.stall.Load(), Skip: p.jb.skip.Load(), Rebuf: p.jb.rebuf.Load()}
 		switch {
 		case p.direct():

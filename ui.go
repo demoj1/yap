@@ -781,6 +781,9 @@ func (m model) peerTile(p *peer, i, w int) string {
 		case p.muted.Load():
 			status = red.Render("muted") + " " + status
 		}
+		if p.sharingNow() {
+			status = green.Render("▶ sharing") + " " + status
+		}
 	}
 	v := m.views[p]
 	if v == nil {
