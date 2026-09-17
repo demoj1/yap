@@ -32,7 +32,7 @@
   .card { min-width:190px; max-width:300px; background:var(--card); border:1px solid var(--line); padding:3px 5px; display:grid; grid-template-columns:22px 1fr auto; column-gap:5px; row-gap:1px; align-items:center }
   .card.speaking { border-color:var(--green) }
   .avatar { width:22px; height:22px; background:var(--card2); display:grid; place-items:center; font-size:13px; font-weight:700; color:var(--blue) }
-  .status, .vol { grid-column:1 / -1 }
+  .status, .vol, .acts { grid-column:1 / -1 } .acts:empty { display:none } .acts button { background:var(--card2); border:1px solid var(--line); padding:0 6px; font-size:12px } .acts button:hover { border-color:var(--blue) }
   .card.me .avatar { color:var(--green) }
   .name { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis } .name small { color:var(--dim); font-weight:400; font-size:11px; margin-left:4px }
   .status { font-size:12px; color:var(--dim); max-width:100%; line-height:1.5 }
@@ -184,7 +184,7 @@ function card(p, me) {
     el.className = 'card' + (me ? ' me' : '');
     el.innerHTML = `<div class="avatar">${esc((p.Name[0] || '?').toUpperCase())}</div>
       <div class="name">${esc(p.Name)}${me ? ' <small>you</small>' : `<small class="ver"></small>`}</div>
-      <div class="status"></div><div class="talk"></div>
+      <div class="status"></div><div class="talk"></div><div class="acts"></div>
       <div class="vol" title="${me ? 'mic gain' : 'volume'}">${me ? '🎤' : ''}<input type="range" min="0" max="${me ? 300 : 200}"><span></span></div>`;
     const r = el.querySelector('input');
     r.addEventListener('pointerdown', () => r.dataset.drag = 1);
@@ -201,7 +201,7 @@ function card(p, me) {
 }
 function pill(text, cls) { return `<span class="p ${cls || ''}">${text}</span>`; }
 // status lines carry buttons; rebuild only on change so a click is never lost to a redraw
-function setStatus(el, html) { const st = el.querySelector('.status'); if (st.dataset.h !== html) { st.dataset.h = html; st.innerHTML = html; } }
+function setStatus(el, html, sel) { const st = el.querySelector(sel || ".status"); if (st.dataset.h !== html) { st.dataset.h = html; st.innerHTML = html; } }
 
 let ctlKey = '', drawerKey = '';
 let themeSeen = '';
@@ -235,11 +235,15 @@ function render(s) {
       else if (p.CantHear) st = pill(`⚠ can't hear you`, 'red') + ' ' + st;
       else if (p.Muted) st = pill('muted', 'red') + ' ' + st;
     }
+    // the buttons live apart from the live text: rebuilt only when sharing or watching changes
+    let acts = '';
     if (p.Sharing) {
       const n = JSON.stringify(p.Name);
-      st = pill('▶ sharing', 'green') + (screens[p.Name] ? ` <button onclick='unwatch(${n})'>✕ stop</button>` : ` <button onclick='watch(${n})'>▶ watch</button>`) + ` <button onclick='pip(${n})'>⧉ pip</button> ` + st;
+      st = pill('▶ sharing', 'green') + ' ' + st;
+      acts = (screens[p.Name] ? `<button onclick='unwatch(${n})'>✕ stop</button>` : `<button onclick='watch(${n})'>▶ watch</button>`) + ` <button onclick='pip(${n})'>⧉ pip</button>`;
     } else if (screens[p.Name]) unwatch(p.Name);
     setStatus(el, st);
+    setStatus(el, acts, '.acts');
     const r = el.querySelector('input');
     if (!r.dataset.drag) { r.value = p.Volume; r.nextElementSibling.textContent = p.Volume + '%'; }
   }
