@@ -85,4 +85,5 @@ func (n *node) heard(p *peer, plain []byte) {
 	p.chatSeen[p.chatIdx%len(p.chatSeen)] = id
 	p.chatIdx++
 	n.chat.add(p.name, string(plain[5:]))
+	n.cue(cueChat)
 }

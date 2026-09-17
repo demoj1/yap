@@ -79,24 +79,29 @@ func newNode(l link, name string, ctl *controls, set *settings) *node {
 const (
 	cueJoin  = 1
 	cueLeave = 2
+	cueChat  = 3
 )
 
-// chime synthesizes the join (rising) or leave (falling) two-note cue:
-// 80 ms per note, 5 ms fades, about -15 dBFS.
+// chime synthesizes a cue: join rises, leave falls (two 80 ms notes), a
+// chat message is one short high blip. 5 ms fades, about -15 dBFS.
 func chime(kind int) []int16 {
-	notes := [2]float64{660, 880}
-	if kind == cueLeave {
-		notes = [2]float64{880, 660}
+	notes, ms := []float64{660, 880}, 80
+	switch kind {
+	case cueLeave:
+		notes = []float64{880, 660}
+	case cueChat:
+		notes, ms = []float64{1320}, 50
 	}
-	const n, fade, amp = sampleRate * 80 / 1000, sampleRate * 5 / 1000, 6000
-	out := make([]int16, 0, 2*n)
+	n, fade := sampleRate*ms/1000, sampleRate*5/1000
+	const amp = 6000
+	out := make([]int16, 0, len(notes)*n)
 	for _, f := range notes {
 		for i := 0; i < n; i++ {
 			env := 1.0
 			if i < fade {
-				env = float64(i) / fade
+				env = float64(i) / float64(fade)
 			} else if i > n-fade {
-				env = float64(n-i) / fade
+				env = float64(n-i) / float64(fade)
 			}
 			out = append(out, int16(amp*env*math.Sin(2*math.Pi*f*float64(i)/sampleRate)))
 		}
@@ -106,6 +111,9 @@ func chime(kind int) []int16 {
 
 // cue queues a chime; dropped if the mixer is behind, a chime is not worth waiting for.
 func (n *node) cue(kind int) {
+	if !n.ctl.sounds.Load() {
+		return
+	}
 	select {
 	case n.cues <- kind:
 	default:

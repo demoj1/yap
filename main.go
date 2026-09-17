@@ -100,6 +100,7 @@ func main() {
 	ctl.aec.Store(set.Echo && !*noecho)
 	ctl.agc.Store(set.AGC && !*noagc)
 	ctl.ptt.Store(set.PTT)
+	ctl.sounds.Store(set.Sounds)
 
 	var l link
 	relay := false

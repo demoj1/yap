@@ -22,6 +22,7 @@ type controls struct {
 	aec     atomic.Bool // acoustic echo cancellation (SpeexDSP)
 	agc     atomic.Bool // automatic gain control: normalize outgoing loudness
 
+	sounds    atomic.Bool  // chimes for people coming and going and for chat messages
 	ptt       atomic.Bool  // push-to-talk: silent unless space is being held
 	talkUntil atomic.Int64 // unix nanos until which the last space press keeps the mic open
 }

@@ -21,6 +21,7 @@ type settings struct {
 	AGC     bool           `json:"agc"`
 	PTT     bool           `json:"ptt"`               // push-to-talk: mic open only while space is held
 	Web     bool           `json:"web"`               // serve the browser UI on localhost
+	Sounds  bool           `json:"sounds"`            // chimes on join/leave and chat
 	Volumes map[string]int `json:"volumes,omitempty"` // friend name -> percent
 
 	// Residual echo suppression, dB, while the far end is silent / speaks.
@@ -40,7 +41,7 @@ func configDir() string {
 }
 
 func loadSettings() *settings {
-	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Echo: true, Web: true, Volumes: map[string]int{}}
+	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Echo: true, Web: true, Sounds: true, Volumes: map[string]int{}}
 	s.path = filepath.Join(configDir(), "settings.json")
 	if raw, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(raw, s) // a corrupt file just falls back to defaults

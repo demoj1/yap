@@ -330,8 +330,14 @@ func (m model) typeKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.typing, m.input = false, ""
 	case tea.KeyEnter:
+		if k.Alt { // alt+enter breaks the line: most terminals cannot tell shift+enter from enter
+			m.input += "\n"
+			break
+		}
 		m.n.say(strings.TrimSpace(m.input))
 		m.typing, m.input = false, ""
+	case tea.KeyCtrlJ:
+		m.input += "\n"
 	case tea.KeyBackspace:
 		if r := []rune(m.input); len(r) > 0 {
 			m.input = string(r[:len(r)-1])
@@ -620,7 +626,7 @@ func (s *screen) bottom() {
 	}
 	show := 5
 	if s.height > 0 {
-		show = max(0, s.height-len(s.lines)-2)
+		show = max(0, s.height-len(s.lines)-1-strings.Count(s.input, "\n")-1)
 	}
 	for _, c := range s.n.chat.tail(show) {
 		who, text := dim.Render("system"), dim.Render(c.Text)
@@ -630,7 +636,17 @@ func (s *screen) bottom() {
 		s.clipped("  " + dim.Render(c.At.Format("15:04")) + " " + who + " " + text)
 	}
 	if s.typing {
-		s.clipped("  " + keySt.Render("> ") + s.input + selSt.Render("▏"))
+		lines := strings.Split(s.input, "\n")
+		for i, l := range lines {
+			lead, tail := "  ", ""
+			if i == 0 {
+				lead = keySt.Render("> ")
+			}
+			if i == len(lines)-1 {
+				tail = selSt.Render("▏") + dim.Render("   enter sends · alt+enter new line · esc")
+			}
+			s.clipped("  " + lead + l + tail)
+		}
 	} else {
 		s.add("  " + dim.Render("t to chat · full log: "+s.logPath))
 	}

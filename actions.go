@@ -59,6 +59,7 @@ func (n *node) toggles() []toggle {
 			func() string { return fmt.Sprintf("×%.1f", math.Float64frombits(n.agcGain.Load())) }, false},
 		{"l", "lock", n.locked.Load, n.toggleLock, nil, false},
 		{"p", "ptt", ctl.ptt.Load, saved(&ctl.ptt, &set.PTT, "push-to-talk (hold space)", n.sendState), nil, false},
+		{"s", "sounds", ctl.sounds.Load, saved(&ctl.sounds, &set.Sounds, "sounds", nil), nil, false},
 		{"w", "web", n.web.running, func() string {
 			set.Web = !n.web.running()
 			set.save()
