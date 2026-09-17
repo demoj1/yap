@@ -105,3 +105,14 @@ func TestChatLine(t *testing.T) {
 		t.Fatalf("chat has %+v", last)
 	}
 }
+
+func TestWrap(t *testing.T) {
+	got := wrap("the quick brown fox jumps\nover", 10)
+	want := []string{"the quick", "brown fox", "jumps", "over"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q", got)
+	}
+	if got := wrap("abcdefghijklmnop", 8); strings.Join(got, "|") != "abcdefgh|ijklmnop" {
+		t.Fatalf("long word: %q", got)
+	}
+}

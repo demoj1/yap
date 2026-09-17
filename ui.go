@@ -627,32 +627,84 @@ func (s *screen) bottom() {
 	} else {
 		s.add("")
 	}
-	show := 5
-	if s.height > 0 {
-		show = max(0, s.height-len(s.lines)-1-strings.Count(s.input, "\n")-1)
+	width := 100
+	if s.width > leftPad+20 {
+		width = s.width - leftPad
 	}
-	for _, c := range s.n.chat.tail(show) {
-		who, text := dim.Render("system"), dim.Render(c.Text)
-		if c.From != "" {
-			who, text = bold.Render(c.From), c.Text
-		}
-		s.clipped("  " + dim.Render(c.At.Format("15:04")) + " " + who + " " + text)
-	}
+	var entry []string // the line being typed, wrapped
 	if s.typing {
-		lines := strings.Split(s.input, "\n")
-		for i, l := range lines {
-			lead, tail := "  ", ""
+		entry = wrap(s.input, width-2)
+		for i := range entry {
+			lead := "  "
 			if i == 0 {
 				lead = keySt.Render("> ")
 			}
-			if i == len(lines)-1 {
-				tail = selSt.Render("▏") + dim.Render("   enter sends · alt+enter new line · esc")
-			}
-			s.clipped("  " + lead + l + tail)
+			entry[i] = "  " + lead + entry[i]
 		}
+		entry[len(entry)-1] += selSt.Render("▏") + dim.Render("   enter sends · alt+enter new line · esc")
 	} else {
-		s.add("  " + dim.Render("t to chat · full log: "+s.logPath))
+		entry = []string{"  " + dim.Render("t to chat · full log: "+s.logPath)}
 	}
+	// Chat: every message wrapped at the terminal width, continuation lines
+	// indented under the text; only the last rows that fit are shown.
+	var rows []string
+	for _, c := range s.n.chat.tail(60) {
+		who, text := "system", c.Text
+		if c.From != "" {
+			who = c.From
+		}
+		head := c.At.Format("15:04") + " " + who + " "
+		indent := strings.Repeat(" ", len([]rune(head)))
+		for i, l := range wrap(text, width-len([]rune(head))) {
+			if c.From == "" {
+				l = dim.Render(l)
+			}
+			if i == 0 {
+				name := bold.Render(who)
+				if c.From == "" {
+					name = dim.Render(who)
+				}
+				rows = append(rows, "  "+dim.Render(c.At.Format("15:04"))+" "+name+" "+l)
+			} else {
+				rows = append(rows, "  "+indent+l)
+			}
+		}
+	}
+	show := 5
+	if s.height > 0 {
+		show = max(0, s.height-len(s.lines)-len(entry))
+	}
+	s.lines = append(s.lines, rows[max(0, len(rows)-show):]...)
+	s.lines = append(s.lines, entry...)
+}
+
+// wrap breaks text into lines no wider than width, at spaces where it can
+// and mid-word where it must; explicit line breaks are kept.
+func wrap(text string, width int) []string {
+	width = max(width, 8)
+	var out []string
+	for _, para := range strings.Split(text, "\n") {
+		line := ""
+		for _, word := range strings.Split(para, " ") {
+			for len([]rune(word)) > width { // a word wider than the line
+				if line != "" {
+					out, line = append(out, line), ""
+				}
+				r := []rune(word)
+				out, word = append(out, string(r[:width])), string(r[width:])
+			}
+			switch {
+			case line == "":
+				line = word
+			case len([]rune(line))+1+len([]rune(word)) <= width:
+				line += " " + word
+			default:
+				out, line = append(out, line), word
+			}
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // statusBar sums the call up in one line: what we send, what comes in, the
