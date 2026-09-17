@@ -127,6 +127,9 @@ func main() {
 		usage()
 	}
 	n := newNode(l, *name, ctl, set)
+	if !relay {
+		go registerScheme() // yap:// links open us from now on
+	}
 
 	logFile, logPath := openLog()
 	openStats()
