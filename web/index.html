@@ -476,12 +476,19 @@ async function watch(name) {
   const w = screens[name] = { el, abort, synced: false, codec: '', frames: 0, bytes: 0 };
   const label = el.querySelector('span');
   const dec = new VideoDecoder({
-    output: f => { if (canvas.width !== f.displayWidth) { canvas.width = f.displayWidth; canvas.height = f.displayHeight; } ctx.drawImage(f, 0, 0); f.close(); },
+    output: f => {
+      // the inline picture is small: paint it small too (full size only in fullscreen / pip), it is far cheaper than a 1080p canvas squeezed by CSS
+      const big = document.fullscreenElement === el || (w.pipVideo && document.pictureInPictureElement === w.pipVideo);
+      w.size = `${f.displayWidth}×${f.displayHeight}`;
+      const cw = big ? f.displayWidth : Math.min(f.displayWidth, 640), ch = Math.round(f.displayHeight * cw / f.displayWidth);
+      if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
+      ctx.drawImage(f, 0, 0, cw, ch); f.close();
+    },
     error: () => { w.synced = false; try { dec.reset(); dec.configure({ codec: codecs[w.codec] }); } catch (e) {} },
   });
   w.dec = dec;
   w.stat = setInterval(() => { // what is arriving: size, codec, frames and bits per second
-    label.textContent = `${name} · ${canvas.width}×${canvas.height} · ${w.codec.toUpperCase()} · ${w.frames} fps · ${(w.bytes * 8 / 1000).toFixed(0)} kbit/s`;
+    label.textContent = `${name} · ${w.size || '…'} · ${w.codec.toUpperCase()} · ${w.frames} fps · ${(w.bytes * 8 / 1000).toFixed(0)} kbit/s`;
     w.frames = w.bytes = 0;
   }, 1000);
   try {
