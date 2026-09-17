@@ -342,7 +342,7 @@ $('pick').addEventListener('change', e => { upload([...e.target.files]); e.targe
 // every frame goes to yap which fans it out; a viewer's browser decodes.
 // Settings live in this browser (it is the one encoding) and apply live.
 const codecs = { vp8: 'vp8', vp9: 'vp09.00.10.08' };
-let shareCfg = { codec: 'vp8', res: 720, fps: 15, kbps: 2500 };
+let shareCfg = { codec: 'vp8', res: 1080, fps: 30, kbps: 15000 };
 try { Object.assign(shareCfg, JSON.parse(localStorage.share || '{}')); } catch (e) {}
 function shareSet(k, v) {
   shareCfg[k] = k === 'codec' ? v : +v;
