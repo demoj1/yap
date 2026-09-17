@@ -102,7 +102,6 @@ func main() {
 	ctl.ptt.Store(set.PTT)
 	ctl.sounds.Store(set.Sounds)
 	ctl.micGain.Store(int32(set.MicGain))
-	ctl.duck.Store(set.Duck)
 
 	var l link
 	relay := false

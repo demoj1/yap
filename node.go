@@ -32,10 +32,9 @@ var stunServers = []string{"stun.cloudflare.com:3478", "stun.l.google.com:19302"
 // microphone out to all of them and mixes everything it hears into one
 // playback stream.
 type node struct {
-	conn    *net.UDPConn
-	audio   *audio
-	talkMS  atomic.Int64 // milliseconds of non-silent frames we sent: our talk time
-	farLoud atomic.Int64 // unix nanos until which the speakers count as playing a voice (ducking)
+	conn   *net.UDPConn
+	audio  *audio
+	talkMS atomic.Int64 // milliseconds of non-silent frames we sent: our talk time
 
 	gateOpen atomic.Bool                 // the noise gate let the last frame through
 	agcGain  atomic.Uint64               // float64 bits: the gain AGC applied to the last frame
@@ -625,9 +624,6 @@ func (n *node) sendLoop() {
 		}
 		n.agcGain.Store(math.Float64bits(ag.gain))
 		gain := n.ctl.micGain.Load()
-		if n.ctl.duck.Load() && time.Now().UnixNano() < n.farLoud.Load() {
-			gain /= 32 // the speakers are playing a voice: hold the mic 30 dB down so it is not echoed back
-		}
 		if gain != 100 && !quiet {
 			for i, x := range f {
 				f[i] = int16(max(-32768, min(32767, int32(x)*gain/100)))
@@ -723,9 +719,6 @@ func (n *node) mixLoop() {
 				break
 			}
 			lim.apply(mix, out)
-			if !isQuiet(out) {
-				n.farLoud.Store(time.Now().Add(duckHold).UnixNano())
-			}
 			n.audio.spkPeak.observe(out)
 			n.audio.play.push(out)
 		}

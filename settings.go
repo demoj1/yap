@@ -22,7 +22,6 @@ type settings struct {
 	PTT     bool           `json:"ptt"`                // push-to-talk: mic open only while space is held
 	Web     bool           `json:"web"`                // serve the browser UI on localhost
 	Sounds  bool           `json:"sounds"`             // chimes on join/leave and chat
-	Duck    bool           `json:"duck"`               // hold the mic down while the speakers play a voice
 	Theme   string         `json:"theme,omitempty"`    // web page: "light" or "dark"; "" follows the system
 	MicGain int            `json:"mic_gain,omitempty"` // percent, 100 = as captured
 	Volumes map[string]int `json:"volumes,omitempty"`  // friend name -> percent
