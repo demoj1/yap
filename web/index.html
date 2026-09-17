@@ -42,8 +42,7 @@
   .vol { display:flex; align-items:center; gap:4px }
   .vol input { flex:1; min-width:0; accent-color:var(--green); height:14px; margin:0 } .vol span { width:36px; text-align:right; font-size:11px; color:var(--dim) }
 
-  #bar { background:var(--card); border-top:1px solid var(--line); padding:2px }
-  #bar .in { display:flex; flex-wrap:wrap; gap:2px } #bar .in .ctl { flex:1 1 84px }
+  #ctls { display:flex; gap:2px } #switches { display:flex; flex-wrap:wrap; gap:4px; padding:2px 0 }
   .ctl { width:84px; padding:2px 4px; background:var(--card2); border:1px solid var(--line); display:flex; flex-direction:column; align-items:center; gap:0 }
   .ctl b { font-size:13px; font-weight:600 } .ctl b u { text-decoration:none; color:var(--blue) }
   .ctl small { font-size:10px; color:var(--dim); min-height:1.2em; white-space:nowrap }
@@ -92,6 +91,7 @@
   <span id="quality"><i></i><span id="qtext">connecting…</span></span>
   <span id="relay"></span>
   <span class="spacer"></span>
+  <span id="ctls"></span>
   <span class="dim" id="version"></span>
   <button id="theme" title="light / dark" onclick="flipTheme()">☾</button>
   <button id="gear" title="settings" onclick="drawer.classList.toggle('open')">⚙</button>
@@ -111,11 +111,11 @@
   </div></div>
 </main>
 <div id="zoom"><img alt=""></div>
-<div id="bar"><div class="in" id="ctls"></div></div>
 <div id="toast"></div>
 <aside id="drawer">
   <h2>settings <button onclick="drawer.classList.remove('open')">✕</button></h2>
   <h3>room</h3><div class="row"><input id="joinlink2" placeholder="yap://… to join another room" style="flex:1"><button onclick="joinRoom('joinlink2')">join</button></div>
+  <h3>switches</h3><div id="switches"></div>
   <h3>microphone</h3><select id="inputs" onchange="act({Device:{Kind:'in',Name:this.value}})"></select>
   <h3>speakers</h3><select id="outputs" onchange="act({Device:{Kind:'out',Name:this.value}})"></select>
   <h3>bitrate</h3><div class="row"><span><b id="bitrate"></b> kbps</span><span><button onclick="act({Bitrate:-1})">−</button> <button onclick="act({Bitrate:1})">+</button></span></div>
@@ -277,13 +277,16 @@ function render(s) {
   const ck = s.Toggles.map(t => t.Key + t.Label).join();
   if (ck !== ctlKey) {
     ctlKey = ck;
-    $('ctls').innerHTML = s.Toggles.map(t => {
+    const btn = t => {
       const i = t.Label.indexOf(t.Key), label = esc(t.Label.slice(0, i)) + '<u>' + esc(t.Key) + '</u>' + esc(t.Label.slice(i + 1));
       return `<button class="ctl" data-key="${t.Key}" onclick="press(this,'${t.Key}')"><b>${label}</b><small></small></button>`;
-    }).join('') + `<button class="ctl" data-key="share" onclick="toggleShare()"><b>share <u>v</u>ideo</b><small></small></button>`;
+    };
+    const inBar = t => 'mlp'.includes(t.Key); // the rest lives in the settings drawer
+    $('ctls').innerHTML = s.Toggles.filter(inBar).map(btn).join('') + `<button class="ctl" data-key="share" onclick="toggleShare()"><b>share <u>v</u>ideo</b><small></small></button>`;
+    $('switches').innerHTML = s.Toggles.filter(t => !inBar(t)).map(btn).join('');
   }
   for (const t of s.Toggles.concat([{ Key: 'share', On: !!share, Live: 'screen' }])) {
-    const b = $('ctls').querySelector(`[data-key="${t.Key}"]`), live = t.Key === 'w' ? t.Live.replace(/^.*:/, ':') : t.Live;
+    const b = document.querySelector(`.ctl[data-key="${t.Key}"]`), live = t.Key === 'w' ? t.Live.replace(/^.*:/, ':') : t.Live;
     if (b.dataset.want && b.dataset.want !== String(t.On)) continue; // pressed, yap has not caught up yet: keep the pressed look
     delete b.dataset.want;
     const cls = 'ctl ' + (t.On ? 'on' : t.OffRed ? 'alarm' : ''), txt = t.On ? (live || 'on') : 'off';
