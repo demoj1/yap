@@ -26,9 +26,7 @@ type settings struct {
 	MicGain int            `json:"mic_gain,omitempty"` // percent, 100 = as captured
 	Volumes map[string]int `json:"volumes,omitempty"`  // friend name -> percent
 
-	// Residual echo suppression, dB, while the far end is silent / speaks.
-	AECSuppress       int `json:"aec_suppress,omitempty"`
-	AECSuppressActive int `json:"aec_suppress_active,omitempty"`
+	AECNLP int `json:"aec_nlp"` // residual echo suppression: 0 soft, 1 normal, 2 hard
 }
 
 // configDir is where the link, settings and log live: <user config>/yap.
@@ -43,7 +41,7 @@ func configDir() string {
 }
 
 func loadSettings() *settings {
-	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Echo: true, Web: true, Sounds: true, Volumes: map[string]int{}}
+	s := &settings{Bitrate: 96, Denoise: true, Gate: true, AGC: true, Echo: true, Web: true, Sounds: true, AECNLP: 1, Volumes: map[string]int{}}
 	s.path = filepath.Join(configDir(), "settings.json")
 	if raw, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(raw, s) // a corrupt file just falls back to defaults
@@ -56,12 +54,6 @@ func loadSettings() *settings {
 	}
 	if s.MicGain == 0 {
 		s.MicGain = 100
-	}
-	if s.AECSuppress == 0 {
-		s.AECSuppress = -45
-	}
-	if s.AECSuppressActive == 0 {
-		s.AECSuppressActive = -20
 	}
 	return s
 }

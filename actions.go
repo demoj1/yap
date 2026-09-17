@@ -96,11 +96,10 @@ func (n *node) knobs() []knob {
 	s := n.set
 	apply := func() {
 		s.save()
-		n.audio.setAEC(s.AECSuppress, s.AECSuppressActive)
+		n.audio.setAEC(s.AECNLP)
 	}
 	return []knob{
-		{"echo suppress", "dB", func() int { return s.AECSuppress }, func(v int) { s.AECSuppress = v; apply() }, 5, -80, -10},
-		{"echo suppress while they talk", "dB", func() int { return s.AECSuppressActive }, func(v int) { s.AECSuppressActive = v; apply() }, 5, -50, -5},
+		{"echo suppress (0 soft · 1 normal · 2 hard)", "", func() int { return s.AECNLP }, func(v int) { s.AECNLP = v; apply() }, 1, 0, 2},
 	}
 }
 

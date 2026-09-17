@@ -1,7 +1,0 @@
-#ifndef YAP_SPEEXDSP_CONFIG_H
-#define YAP_SPEEXDSP_CONFIG_H
-#define FLOATING_POINT
-#define USE_SMALLFT
-#define VAR_ARRAYS
-#define EXPORT
-#endif

@@ -163,7 +163,7 @@ func main() {
 	}
 	defer n.audio.Close()
 	n.audio.aecOn.Store(ctl.aec.Load())
-	n.audio.setAEC(set.AECSuppress, set.AECSuppressActive)
+	n.audio.setAEC(set.AECNLP)
 	n.web, n.logs = &webServer{n: n}, &logRing{}
 	log.SetOutput(io.MultiWriter(os.Stderr, logFile, n.logs))
 	if set.Web {
