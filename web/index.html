@@ -17,10 +17,12 @@
   .pill { display:inline-flex; align-items:center; gap:4px; border:1px solid var(--line); padding:1px 1px 1px 6px }
   .pill code { font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--blue) }
   .pill button { background:var(--card2); padding:1px 6px; font-size:12px } .pill button:hover { background:var(--hover) }
-  #quality { display:inline-flex; align-items:center; gap:5px; color:var(--dim); min-width:36ch }
+  footer { font-size:.8rem; padding:2px 6px; display:flex; flex-wrap:wrap; gap:2px 12px; align-items:center; border-top:1px solid var(--line); background:var(--card); color:var(--dim); font-variant-numeric:tabular-nums; white-space:pre }
+  footer .pill code { font-size:.8rem } footer .pill button { font-size:.75rem; padding:0 5px }
+  #quality { display:inline-flex; align-items:center; gap:5px }
   #quality i { width:8px; height:8px; background:var(--dim); display:inline-block }
   #quality i.good { background:var(--green) } #quality i.ok { background:var(--yellow) } #quality i.poor { background:var(--red) }
-  #relay { color:var(--dim); min-width:14ch }
+  #relay { min-width:14ch }
   .spacer { flex:1 }
   #gear, #theme { font-size:16px; padding:0 6px; line-height:1.3 } #gear:hover, #theme:hover { background:var(--card2) }
   #update div { background:var(--warn-bg); border-bottom:1px solid var(--yellow); padding:3px 6px; display:none }
@@ -69,15 +71,15 @@
   .msg .t { color:var(--dim); font-size:11px; margin-right:4px } .msg .w { font-weight:600; margin-right:4px } .msg.me .w { color:var(--green) }
   .msg.sys { color:var(--dim) } .msg.sys .w { font-weight:400; font-style:italic }
   #compose { border-top:1px solid var(--line); padding:3px 4px }
-  #compose textarea { width:100%; resize:none; background:var(--card2); color:var(--fg); border:1px solid var(--line); padding:2px 4px; font:inherit; min-height:24px; max-height:120px; display:block }
+  #compose .line { display:flex; align-items:stretch; gap:4px }
+  #compose textarea { flex:1; min-width:0; resize:none; background:var(--card2); color:var(--fg); border:1px solid var(--line); padding:2px 4px; font:inherit; min-height:24px; max-height:120px; display:block }
   #compose small { color:var(--dim); font-size:11px }
-  #compose label { float:right; cursor:pointer; padding:0 4px } #compose label:hover { background:var(--card2) }
+  #compose label { cursor:pointer; padding:0 6px; display:grid; place-items:center; border:1px solid var(--line); background:var(--card2) } #compose label:hover { border-color:var(--blue) }
   .group { display:flex; gap:6px; padding:4px; border:1px solid var(--line); align-items:stretch; min-width:0 }
   .group > b { flex:none; align-self:center; writing-mode:vertical-rl; transform:rotate(180deg); font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em }
   #people > div { flex:1; min-width:0 }
   #screens { margin-top:6px; overflow-x:auto } #screens:not(:has(.screen)) { display:none }
-  .screen { position:relative; flex:none; background:#000; border:1px solid var(--line); cursor:zoom-in; min-width:180px; min-height:36px }
-  .screen:not(.live) canvas { display:none } .screen:not(.live) span { position:static; display:block; padding:10px 8px }
+  .screen { position:relative; flex:none; background:#000; border:1px solid var(--line); cursor:zoom-in }
   .screen canvas { display:block; height:20vh; width:auto } .screen:fullscreen canvas { max-height:100vh; width:100vw; height:100vh; object-fit:contain }
   .screen span { position:absolute; left:4px; top:2px; font-size:11px; color:#fff; background:rgba(0,0,0,.5); padding:0 4px }
   .pic { display:block; max-width:min(100%,420px); max-height:220px; border:1px solid var(--line); margin-top:2px }
@@ -88,12 +90,8 @@
 </head>
 <body>
 <header>
-  <span class="pill"><code id="link"></code><button onclick="copyLink()">copy</button></span>
-  <span id="quality"><i></i><span id="qtext">connecting…</span></span>
-  <span id="relay"></span>
-  <span class="spacer"></span>
   <span id="ctls"></span>
-  <span class="dim" id="version"></span>
+  <span class="spacer"></span>
   <button id="theme" title="light / dark" onclick="flipTheme()">☾</button>
   <button id="gear" title="settings" onclick="drawer.classList.toggle('open')">⚙</button>
 </header>
@@ -108,9 +106,16 @@
   </div>
   <div id="chat" class="group"><b>chat</b><div id="chatbox">
     <div id="msgs"></div>
-    <div id="compose"><textarea id="say" rows="1" placeholder="say something…"></textarea><small>enter sends · shift+enter new line · paste or drop files</small><label for="pick" title="send a file">📎</label><input type="file" id="pick" multiple hidden></div>
+    <div id="compose"><div class="line"><textarea id="say" rows="1" placeholder="say something…"></textarea><label for="pick" title="send a file">📎</label><input type="file" id="pick" multiple hidden></div><small>enter sends · shift+enter new line · paste or drop files</small></div>
   </div></div>
 </main>
+<footer>
+  <span class="pill"><code id="link"></code><button onclick="copyLink()">copy</button></span>
+  <span id="quality"><i></i><span id="qtext">connecting…</span></span>
+  <span id="relay"></span>
+  <span class="spacer"></span>
+  <span class="dim" id="version"></span>
+</footer>
 <div id="zoom"><img alt=""></div>
 <div id="toast"></div>
 <aside id="drawer">
@@ -269,7 +274,7 @@ function render(s) {
   // header quality
   const q = $('quality').querySelector('i');
   q.className = people.length ? (bad || drops > 50 ? 'poor' : jit > 15 ? 'ok' : 'good') : '';
-  $('qtext').textContent = people.length ? `ping ${rtt.toFixed(0)} ms · jitter ${jit.toFixed(1)} ms · ${drops} drops${via ? ` · ${via} via relay` : ''}` : 'no one connected';
+  $('qtext').textContent = people.length ? `ping ${rtt.toFixed(0).padStart(3)} ms · jitter ${jit.toFixed(1).padStart(4)} ms · ${String(drops).padStart(4)} drops${via ? ` · ${via} via relay` : ''}` : 'no one connected';
   $('relay').innerHTML = (s.Relays || []).map(r => `⇄ relay ${r.Connected ? r.RTT.toFixed(0) + ' ms' : '<span class="yellow">connecting…</span>'}`).join(' · ');
   $('stats').textContent = `tx ${s.Self.Muted ? 0 : s.Bitrate * people.length} kbps · rx ${rxAll.toFixed(0)} kbps · ` + people.map(p => `${p.Name}: lost ${p.Lost} stall ${p.Stall} skip ${p.Skip} rebuf ${p.Rebuf}`).join(' · ');
 
@@ -491,7 +496,6 @@ async function watch(name) {
       const big = document.fullscreenElement === el || (w.pipVideo && document.pictureInPictureElement === w.pipVideo);
       if (!big && performance.now() - (w.drawn || 0) < 1000 / 3) { f.close(); return; } // a thumbnail: 3 fps is plenty, decoding is the cost we cannot skip
       w.drawn = performance.now();
-      el.classList.add('live'); // the first frame is in: show the picture, not a black box
       w.size = `${f.displayWidth}×${f.displayHeight}`;
       const cw = big ? f.displayWidth : Math.min(f.displayWidth, 640), ch = Math.round(f.displayHeight * cw / f.displayWidth);
       if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
