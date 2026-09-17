@@ -196,17 +196,18 @@ func (w *webServer) videoOut(rw http.ResponseWriter, r *http.Request) {
 // act performs one action from the page and answers with the notice.
 func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	var a struct {
-		Key     string
-		Peer    string
-		Volume  *int
-		MicGain *int
-		Device  *struct{ Kind, Name string }
-		Knob    *struct{ I, Dir int }
-		Bitrate int
-		Chat    string
-		Theme   string
-		Share   *bool
-		Join    string // a link: leave this room and restart into that one
+		Key      string
+		Peer     string
+		Volume   *int
+		MicGain  *int
+		Device   *struct{ Kind, Name string }
+		Knob     *struct{ I, Dir int }
+		Bitrate  int
+		Chat     string
+		Theme    string
+		Share    *bool
+		ShareCfg *shareCfg // screen share settings to remember
+		Join     string    // a link: leave this room and restart into that one
 	}
 	if r.Method != "POST" || json.NewDecoder(r.Body).Decode(&a) != nil {
 		http.Error(rw, "bad request", 400)
@@ -247,6 +248,9 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	case a.Share != nil:
 		n.ctl.sharing.Store(*a.Share)
 		n.sendState()
+	case a.ShareCfg != nil:
+		n.set.Share = *a.ShareCfg
+		n.set.save()
 	case a.Join != "":
 		l, err := parseLink(strings.TrimSpace(a.Join))
 		if err != nil {
@@ -281,6 +285,7 @@ func (n *node) peerByName(name string) *peer {
 type snapshot struct {
 	Version, Link, Name, Update string
 	Theme                       string // "light", "dark" or "" for the system's
+	ShareCfg                    shareCfg
 	Self                        selfJSON
 	People, Relays              []peerJSON
 	Toggles                     []toggleJSON
@@ -336,7 +341,7 @@ type knobJSON struct {
 
 func (n *node) snapshot() snapshot {
 	s := snapshot{Version: version, Link: n.link.String(), Name: n.name, Bitrate: n.ctl.bitrate.Load(),
-		Mic: n.audio.mic, Out: n.audio.out, Theme: n.set.Theme}
+		Mic: n.audio.mic, Out: n.audio.out, Theme: n.set.Theme, ShareCfg: n.set.Share}
 	if tag := n.update.Load(); tag != nil {
 		s.Update = *tag
 	}

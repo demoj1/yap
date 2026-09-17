@@ -24,6 +24,7 @@ type settings struct {
 	Sounds  bool           `json:"sounds"`             // chimes on join/leave and chat
 	Theme   string         `json:"theme,omitempty"`    // web page: "light" or "dark"; "" follows the system
 	MicGain int            `json:"mic_gain,omitempty"` // percent, 100 = as captured
+	Share   shareCfg       `json:"share"`              // screen share settings: the browser encodes with them
 	Volumes map[string]int `json:"volumes,omitempty"`  // friend name -> percent
 
 	AECNLP int `json:"aec_nlp"` // residual echo suppression: 0 soft, 1 normal, 2 hard
@@ -54,6 +55,9 @@ func loadSettings() *settings {
 	}
 	if s.MicGain == 0 {
 		s.MicGain = 100
+	}
+	if s.Share.Codec == "" {
+		s.Share = shareCfg{Codec: "vp8", Res: 1080, FPS: 30, Kbps: 15000}
 	}
 	return s
 }
@@ -86,4 +90,13 @@ func (s *settings) setVolume(name string, v int) {
 	}
 	s.mu.Unlock()
 	s.save()
+}
+
+// shareCfg is how the browser encodes our screen; kept here so it follows
+// the person, not the browser.
+type shareCfg struct {
+	Codec string `json:"codec"` // "vp8" or "vp9"
+	Res   int    `json:"res"`   // max height in px; 0 = as captured
+	FPS   int    `json:"fps"`
+	Kbps  int    `json:"kbps"`
 }

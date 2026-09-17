@@ -1,3 +1,5 @@
+let shareCfg = { codec: 'vp8', res: 1080, fps: 30, kbps: 15000 }; // the saved one arrives with the first snapshot
+let shareCfgSeen = '', shareCfgHold = 0; // hold: a snapshot older than our own change must not undo it
 <!doctype html>
 <html lang="en">
 <head>
@@ -117,7 +119,7 @@
   <h3>screen share</h3>
   <div class="row"><span>codec</span><select id="sh-codec" style="width:auto" onchange="shareSet('codec',this.value)"><option value="vp8">VP8</option><option value="vp9">VP9 (better, more CPU)</option></select></div>
   <div class="row"><span>size</span><select id="sh-res" style="width:auto" onchange="shareSet('res',this.value)"><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option><option value="0">as is</option></select></div>
-  <div class="row"><span>frame rate</span><select id="sh-fps" style="width:auto" onchange="shareSet('fps',this.value)"><option>5</option><option>10</option><option>15</option><option>24</option><option>30</option></select></div>
+  <div class="row"><span>frame rate</span><select id="sh-fps" style="width:auto" onchange="shareSet('fps',this.value)"><option>5</option><option>10</option><option>15</option><option>24</option><option>30</option><option>45</option><option>60</option></select></div>
   <div class="row"><span>bitrate</span><select id="sh-kbps" style="width:auto" onchange="shareSet('kbps',this.value)"><option value="1000">1 Mbit/s</option><option value="2500">2.5 Mbit/s</option><option value="5000">5 Mbit/s</option><option value="8000">8 Mbit/s</option><option value="15000">15 Mbit/s</option></select></div>
   <h3>stats</h3><div class="dim" id="stats"></div>
   <h3>log</h3><div id="log"></div>
@@ -207,6 +209,11 @@ let ctlKey = '', drawerKey = '';
 let themeSeen = '';
 function render(s) {
   if (s.Theme !== themeSeen) { themeSeen = s.Theme; if (s.Theme) { applyTheme(s.Theme); try { localStorage.theme = s.Theme; } catch (e) {} } }
+  if (Date.now() > shareCfgHold && JSON.stringify(s.ShareCfg) !== shareCfgSeen) { // saved settings (from any browser) into the selects
+    shareCfgSeen = JSON.stringify(s.ShareCfg);
+    shareCfg = { codec: s.ShareCfg.Codec, res: s.ShareCfg.Res, fps: s.ShareCfg.FPS, kbps: s.ShareCfg.Kbps };
+    for (const k of ['codec', 'res', 'fps', 'kbps']) 1000 0 935 939 943 958 962 982 985 994 1000'sh-' + k).value = shareCfg[k];
+  }
   $('link').textContent = s.Link;
   $('version').textContent = s.Version;
   $('updateText').style.display = s.Update ? 'block' : 'none';
@@ -346,14 +353,15 @@ let shareCfg = { codec: 'vp8', res: 1080, fps: 30, kbps: 15000 };
 try { Object.assign(shareCfg, JSON.parse(localStorage.share || '{}')); } catch (e) {}
 function shareSet(k, v) {
   shareCfg[k] = k === 'codec' ? v : +v;
-  try { localStorage.share = JSON.stringify(shareCfg); } catch (e) {}
+  shareCfgHold = Date.now() + 1000;
+  act({ ShareCfg: { Codec: shareCfg.codec, Res: shareCfg.res, FPS: shareCfg.fps, Kbps: shareCfg.kbps } });
   if (!share) return;
   if (k === 'res') share.stream.getVideoTracks()[0].applyConstraints(shareSize()).catch(() => {});
   if (k === 'fps' && share.retick) share.retick();
   share.kbps = shareCfg.kbps; share.w = 0; // codec / bitrate / size: the encoder is set up again on the next frame
 }
 function shareSize() { return shareCfg.res ? { width: { max: Math.round(shareCfg.res * 16 / 9) }, height: { max: shareCfg.res } } : {}; }
-for (const k of ['codec', 'res', 'fps', 'kbps']) $('sh-' + k).value = shareCfg[k];
+
 let share = null, keyReqSeen = 0, slowReqSeen = 0, watchers = 0;
 async function toggleShare() {
   if (share) { stopShare(); return; }
