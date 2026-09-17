@@ -42,7 +42,7 @@
   .talk { font-size:11px; color:var(--dim); text-align:right }
   .vol { display:flex; align-items:center; gap:4px }
   .vol input { flex:1; accent-color:var(--green); height:14px; margin:0 } .vol span { width:36px; text-align:right; font-size:11px; color:var(--dim) }
-  @media (max-width:700px) { .card { grid-template-columns:24px 1fr 40px } .talk { grid-column:3; grid-row:1 } .status, .vol { grid-column:2 / -1 } }
+  @media (max-width:700px) { .card { grid-template-columns:32px 1fr 40px } .avatar { grid-row:1 / -1; width:auto; height:auto; align-self:stretch } .talk { grid-column:3; grid-row:1 } .status, .vol { grid-column:2 / -1 } }
 
   #bar { background:var(--card); border-top:1px solid var(--line); padding:2px }
   #bar .in { display:flex; flex-wrap:wrap; gap:2px }
