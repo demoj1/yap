@@ -95,6 +95,7 @@ func rttText(p *peer) string {
 // every tick the model reads the roster and levels straight from the node.
 type ui struct {
 	prog *tea.Program
+	logs chan string // log lines on their way to the screen
 }
 
 type model struct {
@@ -243,10 +244,15 @@ func (m meter) bar(n int) string {
 
 // newUI builds the screen; notice, if any, is shown for the first ~10 s.
 func newUI(n *node, logPath, notice string) *ui {
-	u := &ui{}
+	u := &ui{logs: make(chan string, 256)}
 	m := model{n: n, logPath: logPath, views: map[*peer]*view{}, cache: &panelCache{},
 		notice: notice, noticeAt: 200} // a notice lives 60 frames past noticeAt: this one for ~13 s
 	u.prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	go func() { // Send blocks until the event loop takes the message: never do it from the loop itself
+		for line := range u.logs {
+			u.prog.Send(logMsg(line))
+		}
+	}()
 	return u
 }
 
@@ -261,11 +267,16 @@ func (u *ui) Run() (bool, error) {
 
 // Write feeds log lines to the screen. The periodic per-peer stats stay in
 // the file only: the status bar and tiles show them live, and on screen
-// they would bury the events that matter (who joined, how, who left).
+// they would bury the events that matter (who joined, how, who left). A key
+// handler that logs (lock, web) runs inside the event loop, so the line is
+// handed to a goroutine rather than sent from here; a flood is dropped.
 func (u *ui) Write(p []byte) (int, error) {
 	line := strings.TrimRight(string(p), "\n")
 	if !strings.Contains(line, ": tx ") {
-		u.prog.Send(logMsg(line))
+		select {
+		case u.logs <- line:
+		default:
+		}
 	}
 	return len(p), nil
 }
