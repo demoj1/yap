@@ -69,3 +69,12 @@ func must(err error) {
 		panic(err)
 	}
 }
+
+// decodeFEC rebuilds a lost frame from the low-rate copy Opus put into the
+// packet that follows it (in-band FEC); the encoder side is set up for it.
+func (d *decoder) decodeFEC(next []byte) []int16 {
+	if err := d.dec.DecodeFEC(next, d.pcm); err != nil {
+		return d.decodeLost()
+	}
+	return d.pcm
+}

@@ -49,8 +49,11 @@ type node struct {
 	videoOut chan videoFrame // our screen, frame by frame, to everyone
 	videoSeq uint32
 	keyReq   atomic.Uint32          // bumped when a viewer asks for a key frame; the browser watches it
+	slowReq  atomic.Uint32          // bumped when a viewer loses frames; the browser lowers the bitrate
 	rejoin   atomic.Pointer[string] // a link the page asked to join: main restarts into it once the screen is down
 	stop     func()                 // asks the screen (or the plain loop) to end; set by main
+	group    *groupKey              // seals what a relay copies to several people
+	groupSeq atomic.Uint64
 	link     link
 	id       []byte // random per run; orders the pair direction bit
 	nonce    []byte // random per run; halves of every pair key
@@ -80,7 +83,7 @@ func newNode(l link, name string, ctl *controls, set *settings) *node {
 	return &node{link: l, name: name, ctl: ctl, set: set,
 		id: randBytes(8), nonce: randBytes(16),
 		peers: map[string]*peer{}, byAddr: map[netip.AddrPort]*peer{},
-		stunCh: make(chan []byte, 4), cues: make(chan int, 8), files: newFiles()}
+		stunCh: make(chan []byte, 4), cues: make(chan int, 8), files: newFiles(), group: newGroupKey(randBytes(32))}
 }
 
 const (
@@ -504,6 +507,12 @@ func (n *node) dispatch(q *peer, from netip.AddrPort, pkt, plain []byte) {
 		out = append(out, q.id...)
 		out = append(out, plain[1+idLen:]...)
 		n.conn.WriteToUDPAddrPort(dst.seal(out), *dst.addr.Load())
+	case typFan: // we are their relay
+		q.accept(from, 0, nil)
+		n.fanForward(q, plain)
+	case typRelayedG:
+		q.accept(from, 0, nil)
+		n.fanReceive(q, plain)
 	case typRelayed:
 		q.accept(from, 0, nil)
 		if len(plain) < 1+idLen+8 {
@@ -520,7 +529,7 @@ func (n *node) dispatch(q *peer, from netip.AddrPort, pkt, plain []byte) {
 		if !src.direct() && src.via.Load() == nil {
 			src.via.Store(q) // they found a relay to us; answer the same way
 		}
-		n.deliver(src, netip.AddrPort{}, innerPlain) // no address: the relay's is not theirs
+		n.deliver(src, zeroAddr, innerPlain) // no address: the relay's is not theirs
 	default:
 		n.deliver(q, from, plain)
 	}
@@ -581,6 +590,9 @@ func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 			p.hearsUs.Store(plain[2]&stateHears != 0)
 			p.stateAt.Store(time.Now().UnixNano())
 		}
+		if len(plain) >= 3+32 { // v0.9.13+: their group key, for what a relay fans out
+			p.learnGroup(plain[3 : 3+32])
+		}
 	}
 }
 
@@ -606,7 +618,7 @@ func (n *node) sendState() {
 		if p.silentFor() < noReplyAfter {
 			link |= stateHears
 		}
-		n.sendTo(p, []byte{typState, flags, link})
+		n.sendTo(p, append([]byte{typState, flags, link}, n.group.key[:]...)) // v0.9.13+: our group key rides along
 	}
 }
 
@@ -670,9 +682,7 @@ func (n *node) sendLoop() {
 		}
 		payload = appendAudio(payload, frame, enc.encode(f))
 		frame++
-		for _, p := range people {
-			n.sendTo(p, payload)
-		}
+		n.fanOut(people, payload)
 	}
 }
 
@@ -931,3 +941,5 @@ func (n *node) useDevice(kind malgo.DeviceType, name string) string {
 	}
 	return "out: " + orDefault(gotOut)
 }
+
+var zeroAddr netip.AddrPort // a relayed packet carries no address of its own

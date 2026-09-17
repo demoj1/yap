@@ -26,6 +26,7 @@ const (
 	videoWatchFor = 3 * time.Second        // a viewer's heartbeat keeps frames coming this long
 	videoFlagKey  = 1
 	videoFlagWant = 2
+	videoFlagSlow = 4 // viewer to sender: frames are getting lost, send less
 )
 
 // videoCtl is a viewer's word to the sender: flags videoFlagKey / videoFlagWant.
@@ -62,6 +63,8 @@ type videoRx struct {
 	synced  bool   // a key frame has been delivered, inter frames make sense
 	out     chan videoFrame
 	keyAsk  time.Time
+	slowAsk time.Time
+	drops   int // frames lost since slowAsk
 }
 
 type videoPartial struct {
@@ -108,11 +111,13 @@ func (n *node) videoSender() {
 			pkt = binary.BigEndian.AppendUint16(pkt, uint16(chunks))
 			pkt = append(pkt, f.flags)
 			pkt = append(pkt, f.data[c*videoChunk:min(len(f.data), (c+1)*videoChunk)]...)
+			var to []*peer
 			for _, p := range n.people() {
-				if p.connected() && p.watchingNow() {
-					n.sendTo(p, pkt)
+				if p.watchingNow() {
+					to = append(to, p)
 				}
 			}
+			n.fanOut(to, pkt)
 			time.Sleep(videoPace)
 		}
 	}
@@ -135,6 +140,9 @@ func (n *node) gotVideo(p *peer, plain []byte) {
 		}
 		if flags&videoFlagKey != 0 {
 			n.keyReq.Add(1)
+		}
+		if flags&videoFlagSlow != 0 {
+			n.slowReq.Add(1)
 		}
 		return
 	}
@@ -227,6 +235,13 @@ func (rx *videoRx) tidy(n *node, p *peer) {
 	}
 	if !broken {
 		return
+	}
+	if rx.synced { // a frame really went missing (not just the start): count it toward "slow down"
+		rx.drops++
+		if rx.drops >= 2 && time.Since(rx.slowAsk) > 2*time.Second {
+			rx.slowAsk, rx.drops = time.Now(), 0
+			n.sendTo(p, videoCtl(videoFlagSlow|videoFlagWant))
+		}
 	}
 	rx.synced = false
 	if time.Since(rx.keyAsk) > videoKeyEvery {

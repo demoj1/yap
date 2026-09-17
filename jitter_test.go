@@ -141,3 +141,23 @@ func TestSkipAheadWhenDeep(t *testing.T) {
 		t.Fatalf("want %d got %d", maxDepth-minPrebuf, s)
 	}
 }
+
+// A gap with the next packet already there hands that packet over with
+// lost=true, so the decoder can rebuild the missing frame from its FEC data.
+func TestJitterHandsOverFECPacket(t *testing.T) {
+	j := newJitter()
+	for seq := uint64(0); seq < uint64(minPrebuf)+2; seq++ {
+		if seq != 2 {
+			j.push(seq, []byte{byte(seq)})
+		}
+	}
+	j.pull() // 0
+	j.pull() // 1
+	pkt, lost, ok := j.pull() // 2 is missing, 3 is there
+	if !ok || !lost || len(pkt) != 1 || pkt[0] != 3 {
+		t.Fatalf("gap: pkt=%v lost=%v ok=%v, want packet 3 with lost", pkt, lost, ok)
+	}
+	if pkt, lost, _ := j.pull(); lost || pkt[0] != 3 {
+		t.Fatalf("after the gap packet 3 must play normally, got %v lost=%v", pkt, lost)
+	}
+}

@@ -305,6 +305,7 @@ type selfJSON struct {
 	Talk                int64   // ms
 	Gain                int     // mic gain, percent
 	KeyReq              uint32  // bumped when a viewer wants a key frame of our screen
+	SlowReq             uint32  // bumped when a viewer is losing frames: lower the bitrate
 	Watchers            int     // people our screen goes to right now; 0 means don't bother encoding
 	Muted, PTT, Talking bool
 }
@@ -339,7 +340,7 @@ func (n *node) snapshot() snapshot {
 	if tag := n.update.Load(); tag != nil {
 		s.Update = *tag
 	}
-	s.Self = selfJSON{Level: dbJSON(n.micDB.Load()), Talk: n.talkMS.Load(), Gain: int(n.ctl.micGain.Load()), KeyReq: n.keyReq.Load(), Watchers: n.watchers(), Muted: n.ctl.muted.Load(), PTT: n.ctl.ptt.Load(), Talking: n.ctl.talking()}
+	s.Self = selfJSON{Level: dbJSON(n.micDB.Load()), Talk: n.talkMS.Load(), Gain: int(n.ctl.micGain.Load()), KeyReq: n.keyReq.Load(), SlowReq: n.slowReq.Load(), Watchers: n.watchers(), Muted: n.ctl.muted.Load(), PTT: n.ctl.ptt.Load(), Talking: n.ctl.talking()}
 	for _, p := range n.peerList() {
 		j := peerJSON{Name: p.name, Ver: verText(p), Connected: p.connected(), Path: "connecting",
 			RTT: float64(p.rttUS.Load()) / 1000, Jitter: float64(p.jitUS.Load()) / 1000, RxBytes: p.rxBytes.Load(),

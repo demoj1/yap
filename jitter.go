@@ -58,7 +58,8 @@ func (j *jitter) push(seq uint64, pkt []byte) {
 // pull returns the next packet in order. lost=true means the caller should
 // run PLC: either a real gap (next advances) or the sender is late (stall:
 // next stays, so the frame is played when it arrives instead of dropped).
-// ok=false means (re)buffering.
+// ok=false means (re)buffering. lost with a packet is the one after the gap:
+// decode its FEC data in place of the missing frame.
 func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -93,6 +94,9 @@ func (j *jitter) pull() (pkt []byte, lost, ok bool) {
 	j.next++
 	j.clean = 0
 	j.lost.Add(1)
+	if next, has := j.pkts[j.next]; has { // the packet after the gap carries a low-rate copy of the lost one (Opus FEC)
+		return next, true, true
+	}
 	return nil, true, true
 }
 

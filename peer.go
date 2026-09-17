@@ -23,15 +23,17 @@ const peerTimeout = 10 * time.Second
 // forward envelopes included; audio carries its own frame number so the
 // jitter buffer never mistakes a relay envelope for a lost frame.
 const (
-	typAudio   = 0 // [0][frame uint32][opus]
-	typForward = 1 // [1][dst id 8][inner packet]   to a relay: pass this on
-	typRelayed = 2 // [2][src id 8][inner packet]   from a relay: this came from src
-	typPing    = 3 // [3][unix nanos int64]          answer with a pong carrying the same stamp
-	typPong    = 4 // [4][unix nanos int64]
-	typState   = 5 // [5][flags][link]  flags bit 0: sender is muted (or push-to-talk idle); link bit 0: sender hears us. Sent on change and once a second
-	typChat    = 6 // [6][id uint32][utf-8 text]  sent three times; the id drops the repeats
-	typFile    = 7 // [7][kind][file id uint32]... a file in chunks, see files.go
-	typVideo   = 8 // [8][frame id][chunk][chunks][flags][data]  screen sharing, see video.go
+	typAudio    = 0  // [0][frame uint32][opus]
+	typForward  = 1  // [1][dst id 8][inner packet]   to a relay: pass this on
+	typRelayed  = 2  // [2][src id 8][inner packet]   from a relay: this came from src
+	typPing     = 3  // [3][unix nanos int64]          answer with a pong carrying the same stamp
+	typPong     = 4  // [4][unix nanos int64]
+	typState    = 5  // [5][flags][link]  flags bit 0: sender is muted (or push-to-talk idle); link bit 0: sender hears us. Sent on change and once a second
+	typChat     = 6  // [6][id uint32][utf-8 text]  sent three times; the id drops the repeats
+	typFile     = 7  // [7][kind][file id uint32]... a file in chunks, see files.go
+	typVideo    = 8  // [8][frame id][chunk][chunks][flags][data]  screen sharing, see video.go
+	typFan      = 9  // [9][n][dst ids][group-sealed payload]  to a relay: copy this to each, see fan.go
+	typRelayedG = 10 // [10][src id][group-sealed payload]  from a relay: src sent this to several of us
 
 	stateMuted   = 1
 	stateSharing = 2 // v0.9.6+: the sender is sharing their screen; ask for it with typVideo
@@ -99,15 +101,16 @@ type peer struct {
 	seq      atomic.Uint64
 	rx, tx   atomic.Uint64
 	txBytes  atomic.Uint64
-	rxBytes  atomic.Uint64           // audio bytes from them: their bitrate as we see it
-	talkMS   atomic.Int64            // milliseconds of non-silent frames heard from them: their talk time
-	muted    atomic.Bool             // they told us their mic is off (mute or push-to-talk idle)
-	hearsUs  atomic.Bool             // their last state said our packets reach them
-	stateAt  atomic.Int64            // unix nanos of that state; 0 until a client new enough sends one
-	sharing  atomic.Bool             // they are sharing their screen (from their state)
-	watching atomic.Int64            // unix nanos of their last "watching" heartbeat; our screen goes only while it is fresh
-	video    atomic.Pointer[videoRx] // their screen, frame by frame, for the browser
-	chatSeen [8]uint32               // ids of their last chat messages (recvLoop only)
+	rxBytes  atomic.Uint64            // audio bytes from them: their bitrate as we see it
+	talkMS   atomic.Int64             // milliseconds of non-silent frames heard from them: their talk time
+	muted    atomic.Bool              // they told us their mic is off (mute or push-to-talk idle)
+	hearsUs  atomic.Bool              // their last state said our packets reach them
+	stateAt  atomic.Int64             // unix nanos of that state; 0 until a client new enough sends one
+	sharing  atomic.Bool              // they are sharing their screen (from their state)
+	watching atomic.Int64             // unix nanos of their last "watching" heartbeat; our screen goes only while it is fresh
+	video    atomic.Pointer[videoRx]  // their screen, frame by frame, for the browser
+	group    atomic.Pointer[groupKey] // their group key from the state packet; opens fan-out packets
+	chatSeen [8]uint32                // ids of their last chat messages (recvLoop only)
 	chatIdx  int
 	rxLogged uint64       // rxBytes at the last stats line (statsLoop only)
 	rttUS    atomic.Int64 // smoothed ping round trip, microseconds; 0 until the first pong
@@ -251,7 +254,9 @@ func (p *peer) nextFrame() []int16 {
 			return nil
 		}
 		var pcm []int16
-		if lost {
+		if lost && pkt != nil {
+			pcm = p.dec.decodeFEC(pkt)
+		} else if lost {
 			pcm = p.dec.decodeLost()
 		} else {
 			pcm = p.dec.decode(pkt)

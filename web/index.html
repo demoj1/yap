@@ -218,6 +218,10 @@ function render(s) {
   watchers = s.Self.Watchers;
   setStatus(meEl, (share ? pill(`▶ ${share.info || 'sharing'} · ${watchers} watching`, 'green') + ' ' : '') + (s.Self.Muted ? pill('● muted', 'red') : s.Self.PTT ? (s.Self.Talking ? pill('● talking', 'green') : pill('hold space to talk')) : pill(`tx ${s.Bitrate} kbps`)));
   if (s.Self.KeyReq !== keyReqSeen) { keyReqSeen = s.Self.KeyReq; if (share) share.wantKey = true; }
+  if (s.Self.SlowReq !== slowReqSeen) { // a viewer is losing frames: back off, then creep back up
+    slowReqSeen = s.Self.SlowReq;
+    if (share) { share.kbps = Math.max(300, Math.round(share.kbps * 0.7)); share.slowAt = Date.now(); share.w = 0; toast(`viewer losing frames — ${share.kbps} kbit/s`); }
+  }
   const mg = meEl.querySelector('input');
   if (!mg.dataset.drag) { mg.value = s.Self.Gain; mg.nextElementSibling.textContent = s.Self.Gain + '%'; }
   let rxAll = 0, rtt = 0, jit = 0, drops = 0, via = 0, bad = 0;
@@ -346,11 +350,11 @@ function shareSet(k, v) {
   if (!share) return;
   if (k === 'res') share.stream.getVideoTracks()[0].applyConstraints(shareSize()).catch(() => {});
   if (k === 'fps' && share.retick) share.retick();
-  share.w = 0; // codec / bitrate / size: the encoder is set up again on the next frame
+  share.kbps = shareCfg.kbps; share.w = 0; // codec / bitrate / size: the encoder is set up again on the next frame
 }
 function shareSize() { return shareCfg.res ? { width: { max: Math.round(shareCfg.res * 16 / 9) }, height: { max: shareCfg.res } } : {}; }
 for (const k of ['codec', 'res', 'fps', 'kbps']) $('sh-' + k).value = shareCfg[k];
-let share = null, keyReqSeen = 0, watchers = 0;
+let share = null, keyReqSeen = 0, slowReqSeen = 0, watchers = 0;
 async function toggleShare() {
   if (share) { stopShare(); return; }
   if (!window.VideoEncoder) return toast('this browser has no WebCodecs — use Chrome/Brave/Edge or Firefox 130+');
@@ -362,13 +366,14 @@ async function toggleShare() {
   video.srcObject = stream; video.muted = true;
   await video.play();
   const enc = new VideoEncoder({ output: sendFrame, error: e => { toast('encoder: ' + e.message); stopShare(); } });
-  share = { stream, video, enc, w: 0, h: 0, n: 0, wantKey: true, codec: 'vp8' };
+  share = { stream, video, enc, w: 0, h: 0, n: 0, wantKey: true, codec: 'vp8', kbps: shareCfg.kbps, slowAt: 0 };
   act({ Share: true }); // everyone learns we share; frames go to whoever asks
   stream.getVideoTracks()[0].onended = stopShare; // the browser's own "stop sharing"
   startTicker();
   share.frames = share.bytes = 0; share.info = '';
   share.stat = setInterval(() => { // what goes out, for our own tile
-    share.info = share.w ? `${share.h}p ${share.codec.toUpperCase()} ${share.frames}fps ${(share.bytes * 8 / 1e6).toFixed(1)}Mb/s` : 'starting…';
+    if (share.kbps < shareCfg.kbps && Date.now() - share.slowAt > 5000) { share.kbps = Math.min(shareCfg.kbps, Math.round(share.kbps * 1.15)); share.slowAt = Date.now(); share.w = 0; } // no complaints for 5 s: a bit more
+    share.info = share.w ? `${share.h}p ${share.codec.toUpperCase()} ${share.frames}fps ${(share.bytes * 8 / 1e6).toFixed(1)}Mb/s${share.kbps < shareCfg.kbps ? ' ↓' : ''}` : 'starting…';
     share.frames = share.bytes = 0;
   }, 1000);
   ctlKey = '';
@@ -408,7 +413,7 @@ async function shareTick(frame) {
     let codec = shareCfg.codec;
     if (codec === 'vp9' && !(await VideoEncoder.isConfigSupported({ codec: codecs.vp9, width: w, height: h })).supported) { codec = 'vp8'; toast('no VP9 encoder here, using VP8'); }
     share.w = w; share.h = h; share.wantKey = true; share.codec = codec;
-    enc.configure({ codec: codecs[codec], width: w, height: h, bitrate: shareCfg.kbps * 1000, framerate: shareCfg.fps, latencyMode: 'realtime' });
+    enc.configure({ codec: codecs[codec], width: w, height: h, bitrate: share.kbps * 1000, framerate: shareCfg.fps, latencyMode: 'realtime' });
   }
   const own = frame || new VideoFrame(video, { timestamp: Math.round(performance.now() * 1000) });
   enc.encode(own, { keyFrame: share.wantKey || share.n % (shareCfg.fps * 2) === 0 });
