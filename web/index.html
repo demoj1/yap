@@ -212,7 +212,7 @@ function render(s) {
   if (Date.now() > shareCfgHold && JSON.stringify(s.ShareCfg) !== shareCfgSeen) { // saved settings (from any browser) into the selects
     shareCfgSeen = JSON.stringify(s.ShareCfg);
     shareCfg = { codec: s.ShareCfg.Codec, res: s.ShareCfg.Res, fps: s.ShareCfg.FPS, kbps: s.ShareCfg.Kbps };
-    for (const k of ['codec', 'res', 'fps', 'kbps']) 1000 0 935 939 943 958 962 982 985 994 1000'sh-' + k).value = shareCfg[k];
+    for (const k of ['codec', 'res', 'fps', 'kbps']) $('sh-' + k).value = shareCfg[k];
   }
   $('link').textContent = s.Link;
   $('version').textContent = s.Version;
