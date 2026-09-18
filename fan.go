@@ -62,9 +62,9 @@ func (p *peer) fans() bool { return p.ver == "dev" || newerThan(p.ver, fanSince)
 func (n *node) fanOut(peers []*peer, payload []byte) {
 	var relays map[*peer][]*peer
 	for _, p := range peers {
-		if !p.connected() {
-			continue
-		}
+		// Not "connected only": for someone reached through a relay, our
+		// first audio packet is what tells them we exist. Both sides
+		// waiting for the other's first packet is a deadlock (v0.9.13–26).
 		via := p.via.Load()
 		if p.direct() || via == nil || !via.direct() || !via.fans() || !p.fans() || p.group.Load() == nil {
 			n.sendTo(p, payload) // the old way: they cannot open a group packet
