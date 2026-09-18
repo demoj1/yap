@@ -546,6 +546,7 @@ func (n *node) dispatch(q *peer, from netip.AddrPort, pkt, plain []byte) {
 		}
 		innerPlain, ok := src.open(plain[1+idLen:])
 		if !ok {
+			n.staleKey(src)
 			return
 		}
 		if !src.direct() && src.via.Load() == nil {
@@ -975,3 +976,16 @@ func (n *node) useDevice(kind malgo.DeviceType, name string) string {
 }
 
 var zeroAddr netip.AddrPort // a relayed packet carries no address of its own
+
+// staleKey is called when a relayed packet from src does not open: the
+// pair key is out of date on one side (a hello was missed — a flapping
+// VPN loses ntfy events). Say so, and announce again so they get our
+// current nonce; their next hello brings theirs.
+func (n *node) staleKey(src *peer) {
+	now := time.Now().UnixNano()
+	if last := src.staleAt.Load(); now-last < int64(30*time.Second) || !src.staleAt.CompareAndSwap(last, now) {
+		return
+	}
+	n.system("packets from %s cannot be opened — keys out of date (a missed hello?), announcing again", src.name)
+	go n.announce()
+}

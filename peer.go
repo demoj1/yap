@@ -126,6 +126,7 @@ type peer struct {
 	punching atomic.Bool              // one punch goroutine at a time
 	tries    atomic.Int32             // failed punches in a row; the chat hears about the first only
 	lastTx   atomic.Int64             // unix nanos of our last packet to them: a knock is answered only when nothing else just went
+	staleAt  atomic.Int64             // unix nanos of the last "cannot open their packets" complaint
 	via      atomic.Pointer[peer]     // relay we reach this peer through when direct punching failed
 	reach    atomic.Pointer[[][]byte] // IDs this peer said it talks to directly (from its hello)
 	ready    chan struct{}            // closed on the first authenticated packet from them

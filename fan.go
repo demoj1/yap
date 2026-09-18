@@ -130,6 +130,7 @@ func (n *node) fanReceive(q *peer, plain []byte) {
 	}
 	inner, ok := g.open(plain[1+idLen:])
 	if !ok {
+		n.staleKey(src)
 		return
 	}
 	if !src.direct() && src.via.Load() == nil {
