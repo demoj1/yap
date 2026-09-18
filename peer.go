@@ -129,6 +129,7 @@ type peer struct {
 	lastTx   atomic.Int64             // unix nanos of our last packet to them: a knock is answered only when nothing else just went
 	staleAt  atomic.Int64             // unix nanos of the last "cannot open their packets" complaint
 	logsGot  atomic.Bool              // collector only: their log has arrived
+	dropAt   atomic.Int64             // unix nanos of the last "dropped a packet from them" line
 	via      atomic.Pointer[peer]     // relay we reach this peer through when direct punching failed
 	reach    atomic.Pointer[[][]byte] // IDs this peer said it talks to directly (from its hello)
 	ready    chan struct{}            // closed on the first authenticated packet from them

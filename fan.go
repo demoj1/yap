@@ -105,6 +105,7 @@ func (n *node) fanForward(q *peer, plain []byte) {
 	for i := 0; i < cnt; i++ {
 		dst := n.peerByID(plain[2+i*idLen : 2+(i+1)*idLen])
 		if dst == nil || !dst.direct() {
+			n.dropped(q, "fan", dst)
 			continue
 		}
 		out := make([]byte, 0, 1+idLen+len(body))
@@ -122,6 +123,7 @@ func (n *node) fanReceive(q *peer, plain []byte) {
 	}
 	src := n.peerByID(plain[1 : 1+idLen])
 	if src == nil {
+		n.dropped(q, "fan-relayed", nil)
 		return
 	}
 	g := src.group.Load()

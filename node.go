@@ -524,6 +524,7 @@ func (n *node) dispatch(q *peer, from netip.AddrPort, pkt, plain []byte) {
 		}
 		dst := n.peerByID(plain[1 : 1+idLen])
 		if dst == nil || !dst.direct() {
+			n.dropped(q, "forward", dst)
 			return
 		}
 		out := make([]byte, 0, 1+idLen+len(plain)-1-idLen)
@@ -544,6 +545,7 @@ func (n *node) dispatch(q *peer, from netip.AddrPort, pkt, plain []byte) {
 		}
 		src := n.peerByID(plain[1 : 1+idLen])
 		if src == nil {
+			n.dropped(q, "relayed", nil)
 			return
 		}
 		innerPlain, ok := src.open(plain[1+idLen:])
@@ -994,5 +996,21 @@ func (n *node) staleKey(src *peer) {
 	n.system("packets from %s cannot be opened — keys out of date (a missed hello?), announcing again", src.name)
 	if n.conn != nil && n.room != nil {
 		go n.announce()
+	}
+}
+
+// dropped notes a packet we could not pass on or place: from q, of kind,
+// for dst (nil = an id we do not know). Once per 10 s per peer, so a
+// stale hello on someone's side shows in the log instead of vanishing.
+func (n *node) dropped(q *peer, kind string, dst *peer) {
+	now := time.Now().UnixNano()
+	if last := q.dropAt.Load(); now-last < int64(10*time.Second) || !q.dropAt.CompareAndSwap(last, now) {
+		return
+	}
+	switch {
+	case dst == nil:
+		log.Printf("%s: %s from %s for an id I do not know — they hold a stale hello", kind, q.name, q.name)
+	default:
+		log.Printf("%s: %s from %s for %s, who has no direct address here", kind, q.name, q.name, dst.name)
 	}
 }
