@@ -370,6 +370,7 @@ func (n *node) punch(p *peer, cands []string) {
 		for _, a := range addrs {
 			n.conn.WriteToUDPAddrPort(p.seal(nil), a)
 		}
+		p.lastTx.Store(time.Now().UnixNano())
 		select {
 		case <-ready:
 			ready = nil
@@ -561,6 +562,15 @@ func (n *node) dispatch(q *peer, from netip.AddrPort, pkt, plain []byte) {
 func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 	if len(plain) == 0 {
 		p.accept(from, 0, nil)
+		// A knock from a new place gets an answer right away, to exactly where
+		// it came from: behind a VPN that hops exits (or a symmetric NAT) the
+		// once-a-second ping misses the window. Nothing is sent when our own
+		// traffic already went their way in the last 100 ms, so two knockers
+		// never volley.
+		if from.IsValid() && time.Since(time.Unix(0, p.lastTx.Load())) > 100*time.Millisecond {
+			n.conn.WriteToUDPAddrPort(p.seal(nil), from)
+			p.lastTx.Store(time.Now().UnixNano())
+		}
 		return
 	}
 	switch plain[0] {
@@ -730,6 +740,7 @@ func (n *node) sendTo(p *peer, payload []byte) {
 	}
 	p.tx.Add(1)
 	p.txBytes.Add(uint64(len(pkt)))
+	p.lastTx.Store(time.Now().UnixNano())
 }
 
 // mixLoop feeds the playback queue: one frame from every peer, scaled by
