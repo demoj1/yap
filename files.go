@@ -250,6 +250,10 @@ func (n *node) gotFile(p *peer, plain []byte) {
 			}
 			n.chat.addFile(p.name, stored, len(data))
 			n.cue(cueChat)
+			if n.collector {
+				p.logsGot.Store(true)
+				fmt.Println("got", p.name, "→", stored)
+			}
 		}()
 	}
 }

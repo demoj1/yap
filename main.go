@@ -28,6 +28,7 @@ func usage() {
   yap devices                     list microphones and speakers
   yap reset                       forget saved devices/volumes, back to defaults
   yap stats                       how connections went: per friend, direct/relayed, time to connect, drops
+  yap logs <link>                 join without sound, collect everyone's log into <config>/yap/files, leave
   yap update                      replace this binary with the latest release
 
   common flags: -name <shown to the friend>  -mic <name>  -out <name>
@@ -112,7 +113,7 @@ func main() {
 			usage()
 		}
 		l = loadOrCreateLink(*rotate)
-	case "join", "relay":
+	case "join", "relay", "logs":
 		if fs.NArg() != 1 {
 			usage()
 		}
@@ -123,6 +124,9 @@ func main() {
 		relay = os.Args[1] == "relay"
 		if !relay {
 			*port = 0 // a caller takes any free port; the relay keeps the one it was given
+		}
+		if os.Args[1] == "logs" {
+			*name += "-logs" // our own call may be running under the plain name; do not knock it out
 		}
 	default:
 		usage()
@@ -154,6 +158,11 @@ func main() {
 	if relay { // daemon: no audio, no TUI, just forward for everyone
 		log.Printf("relay on udp %d — forwarding for anyone on this link", *port)
 		n.runRelay()
+		return
+	}
+	if os.Args[1] == "logs" { // no audio, no TUI: collect everyone's log and leave
+		fmt.Printf("\n  asking everyone on %s for their log (up to %s)…\n\n", n.link, logsWait)
+		n.runCollector()
 		return
 	}
 

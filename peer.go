@@ -34,6 +34,7 @@ const (
 	typVideo    = 8  // [8][frame id][chunk][chunks][flags][data]  screen sharing, see video.go
 	typFan      = 9  // [9][n][dst ids][group-sealed payload]  to a relay: copy this to each, see fan.go
 	typRelayedG = 10 // [10][src id][group-sealed payload]  from a relay: src sent this to several of us
+	typLogs     = 11 // [11]  a collector asks for our log; answered with a typFile of it, see logs.go
 
 	stateMuted   = 1
 	stateSharing = 2 // v0.9.6+: the sender is sharing their screen; ask for it with typVideo
@@ -127,6 +128,7 @@ type peer struct {
 	tries    atomic.Int32             // failed punches in a row; the chat hears about the first only
 	lastTx   atomic.Int64             // unix nanos of our last packet to them: a knock is answered only when nothing else just went
 	staleAt  atomic.Int64             // unix nanos of the last "cannot open their packets" complaint
+	logsGot  atomic.Bool              // collector only: their log has arrived
 	via      atomic.Pointer[peer]     // relay we reach this peer through when direct punching failed
 	reach    atomic.Pointer[[][]byte] // IDs this peer said it talks to directly (from its hello)
 	ready    chan struct{}            // closed on the first authenticated packet from them

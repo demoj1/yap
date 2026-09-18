@@ -66,18 +66,19 @@ type node struct {
 	byAddr map[netip.AddrPort]*peer // source address → peer, once a packet authenticated
 	joined int64                    // monotonic, so the roster keeps join order
 
-	stunCh  chan []byte // STUN replies, routed out of recvLoop
-	cues    chan int    // join/leave chimes queued for the mixer
-	pub     atomic.Pointer[net.UDPAddr]
-	room    *room
-	update  atomic.Pointer[string]          // "update available ..." once the check found a newer release
-	roster  atomic.Pointer[[]*peer]         // cached sorted snapshot for the per-frame hot paths
-	folks   atomic.Pointer[[]*peer]         // roster minus relays: the people we talk to
-	lastSay atomic.Int64                    // unix nanos of the last announce; throttles vs ntfy 429
-	flips   atomic.Int32                    // times our public address changed between announces
-	relay   bool                            // relay/daemon mode: no audio, just forward for everyone
-	locked  atomic.Bool                     // room lock: no new participants admitted
-	allowed atomic.Pointer[map[string]bool] // names admitted at lock time; nil when unlocked
+	stunCh    chan []byte // STUN replies, routed out of recvLoop
+	cues      chan int    // join/leave chimes queued for the mixer
+	pub       atomic.Pointer[net.UDPAddr]
+	room      *room
+	update    atomic.Pointer[string]          // "update available ..." once the check found a newer release
+	roster    atomic.Pointer[[]*peer]         // cached sorted snapshot for the per-frame hot paths
+	folks     atomic.Pointer[[]*peer]         // roster minus relays: the people we talk to
+	lastSay   atomic.Int64                    // unix nanos of the last announce; throttles vs ntfy 429
+	flips     atomic.Int32                    // times our public address changed between announces
+	relay     bool                            // relay/daemon mode: no audio, just forward for everyone
+	collector bool                            // `yap logs`: no audio, asks everyone for their log and leaves
+	locked    atomic.Bool                     // room lock: no new participants admitted
+	allowed   atomic.Pointer[map[string]bool] // names admitted at lock time; nil when unlocked
 }
 
 func newNode(l link, name string, ctl *controls, set *settings) *node {
@@ -306,6 +307,7 @@ func (n *node) onHello(h hello) bool {
 func (n *node) connected(p *peer, how string) {
 	if how != "none" {
 		p.tries.Store(0)
+		n.askLogs(p)
 	}
 	stat("connect", map[string]any{"peer": p.name, "how": how, "after_s": math.Round(time.Since(p.since).Seconds()*10) / 10})
 }
@@ -576,7 +578,7 @@ func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 	}
 	switch plain[0] {
 	case typAudio:
-		if n.relay {
+		if n.relay || n.collector {
 			p.accept(from, 0, nil) // relay keeps the peer alive but never buffers audio
 			return
 		}
@@ -601,6 +603,9 @@ func (n *node) deliver(p *peer, from netip.AddrPort, plain []byte) {
 		if !n.relay {
 			n.gotFile(p, plain)
 		}
+	case typLogs:
+		p.accept(from, 0, nil)
+		n.giveLogs(p)
 	case typVideo:
 		p.accept(from, 0, nil)
 		if !n.relay {
