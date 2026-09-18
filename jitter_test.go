@@ -151,8 +151,8 @@ func TestJitterHandsOverFECPacket(t *testing.T) {
 			j.push(seq, []byte{byte(seq)})
 		}
 	}
-	j.pull() // 0
-	j.pull() // 1
+	j.pull()                  // 0
+	j.pull()                  // 1
 	pkt, lost, ok := j.pull() // 2 is missing, 3 is there
 	if !ok || !lost || len(pkt) != 1 || pkt[0] != 3 {
 		t.Fatalf("gap: pkt=%v lost=%v ok=%v, want packet 3 with lost", pkt, lost, ok)

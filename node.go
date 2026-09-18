@@ -74,6 +74,7 @@ type node struct {
 	roster  atomic.Pointer[[]*peer]         // cached sorted snapshot for the per-frame hot paths
 	folks   atomic.Pointer[[]*peer]         // roster minus relays: the people we talk to
 	lastSay atomic.Int64                    // unix nanos of the last announce; throttles vs ntfy 429
+	flips   atomic.Int32                    // times our public address changed between announces
 	relay   bool                            // relay/daemon mode: no audio, just forward for everyone
 	locked  atomic.Bool                     // room lock: no new participants admitted
 	allowed atomic.Pointer[map[string]bool] // names admitted at lock time; nil when unlocked
@@ -224,6 +225,11 @@ func (n *node) announce() {
 	}
 	if cur := n.pub.Load(); prev == nil || cur == nil || cur.String() != prev.String() {
 		log.Println("you are at", h.Addrs)
+		// A public address that keeps moving is a VPN hopping between exits;
+		// no UDP session survives that. Say so once, people can fix it.
+		if prev != nil && cur != nil && n.flips.Add(1) == 2 {
+			n.system("your public address keeps changing (%s → %s) — a VPN hopping between exits breaks calls; pick a fixed server or turn it off", prev.IP, cur.IP)
+		}
 	}
 	if err := n.room.say(h); err != nil {
 		log.Println("rendezvous:", err)
@@ -298,6 +304,9 @@ func (n *node) onHello(h hello) bool {
 // connected notes how a peer ended up reachable — directly, through a
 // relay, or not at all — and how long that took since their hello.
 func (n *node) connected(p *peer, how string) {
+	if how != "none" {
+		p.tries.Store(0)
+	}
 	stat("connect", map[string]any{"peer": p.name, "how": how, "after_s": math.Round(time.Since(p.since).Seconds()*10) / 10})
 }
 
@@ -393,8 +402,20 @@ func (n *node) punch(p *peer, cands []string) {
 			}
 			// Nobody can relay yet; keep the peer so a relayed packet from
 			// their side can still land. expire() drops it if nothing comes.
-			n.system("could not reach %s (symmetric NAT on one side?)", p.name)
+			if p.tries.Add(1) == 1 {
+				n.system("could not reach %s (symmetric NAT on one side?)", p.name)
+			} else {
+				log.Printf("still cannot reach %s", p.name)
+			}
 			n.connected(p, "none")
+			if p.relay { // a relay is always there: keep knocking, a hopping VPN may hold still for a while
+				go func() {
+					time.Sleep(10 * time.Second)
+					if !p.connected() {
+						n.punch(p, cands)
+					}
+				}()
+			}
 			return
 		case <-tick.C:
 			if p.direct() { // their own packet landed while we were relaying
