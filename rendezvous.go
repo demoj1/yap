@@ -31,6 +31,8 @@ var rendezvousHosts = []string{
 
 const staleHello = 60 // seconds: a cached hello older than this belongs to a run that is gone
 
+const streamIdle = 75 * time.Second // ntfy keepalives come every 45 s; silence past this is a dead connection
+
 // hello is what every participant publishes to the room.
 type hello struct {
 	Proto int      `json:"proto"`
@@ -131,6 +133,14 @@ func (r *room) subscribe(ctx context.Context, host string, out chan<- hello) {
 // stream holds one subscription open, feeding hellos to out, and returns how
 // long to wait before reconnecting (longer after a 429 or error).
 func (r *room) stream(ctx context.Context, url string, out chan<- hello) time.Duration {
+	// A connection that dies without a FIN (a VPN switching exits, a NAT
+	// mapping expiring) would leave Scan waiting forever and the room deaf
+	// to every hello. ntfy sends a keepalive every 45 s; silence longer than
+	// that means the stream is dead: cut it and reconnect.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	watchdog := time.AfterFunc(streamIdle, cancel)
+	defer watchdog.Stop()
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -151,6 +161,7 @@ func (r *room) stream(ctx context.Context, url string, out chan<- hello) time.Du
 		Time    int64  `json:"time"` // unix seconds the host received it
 	}
 	for sc.Scan() {
+		watchdog.Reset(streamIdle) // any line, keepalives included, proves the connection is alive
 		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Event != "message" {
 			continue
 		}

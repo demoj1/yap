@@ -987,5 +987,7 @@ func (n *node) staleKey(src *peer) {
 		return
 	}
 	n.system("packets from %s cannot be opened — keys out of date (a missed hello?), announcing again", src.name)
-	go n.announce()
+	if n.conn != nil && n.room != nil {
+		go n.announce()
+	}
 }
