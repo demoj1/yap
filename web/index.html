@@ -379,12 +379,13 @@ function shareSet(k, v) {
 // comes to and roughly what bitrate keeps screen content clean at the
 // chosen frame rate (~0.07 bit per pixel per frame for VP8/VP9).
 function qualityLabels() {
-  const n = share && share.native; // sizes and bitrates only once a real screen is being captured
+  // Sizes come from the captured screen once sharing; before that, from this
+  // display (what one usually shares), so the bitrate estimate is there from the start.
+  const live = share && share.native, n = live || { width: Math.round(screen.width * devicePixelRatio), height: Math.round(screen.height * devicePixelRatio) };
   for (const o of $('sh-quality').options) {
-    const q = +o.value / 100;
-    if (!n) { o.textContent = o.value === '100' ? '100% · as captured' : `${o.value}%`; continue; }
-    const w = Math.round(n.width * q), h = Math.round(n.height * q);
-    o.textContent = `${o.value}% · ${w}×${h} · ~${(w * h * shareCfg.fps * 0.07 / 1e6).toFixed(1)} Mbit/s`;
+    const q = +o.value / 100, w = Math.round(n.width * q), h = Math.round(n.height * q);
+    const size = live || o.value !== '100' ? `${w}×${h}` : 'as captured';
+    o.textContent = `${o.value}% · ${size} · ~${(w * h * shareCfg.fps * 0.07 / 1e6).toFixed(1)} Mbit/s`;
   }
 }
 function applyQuality() {
