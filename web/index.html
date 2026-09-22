@@ -379,9 +379,11 @@ function shareSet(k, v) {
 // comes to and roughly what bitrate keeps screen content clean at the
 // chosen frame rate (~0.07 bit per pixel per frame for VP8/VP9).
 function qualityLabels() {
-  const n = share && share.native ? share.native : { width: 1920, height: 1080 };
+  const n = share && share.native; // sizes and bitrates only once a real screen is being captured
   for (const o of $('sh-quality').options) {
-    const q = +o.value / 100, w = Math.round(n.width * q), h = Math.round(n.height * q);
+    const q = +o.value / 100;
+    if (!n) { o.textContent = o.value === '100' ? '100% · as captured' : `${o.value}%`; continue; }
+    const w = Math.round(n.width * q), h = Math.round(n.height * q);
     o.textContent = `${o.value}% · ${w}×${h} · ~${(w * h * shareCfg.fps * 0.07 / 1e6).toFixed(1)} Mbit/s`;
   }
 }
@@ -482,6 +484,7 @@ function stopShare() {
   try { share.enc.close(); } catch (e) {}
   share.stream.getTracks().forEach(t => t.stop());
   share = null; ctlKey = '';
+  qualityLabels();
   act({ Share: false });
 }
 // watching: one canvas per person sharing, frames pulled from /video/<name>
