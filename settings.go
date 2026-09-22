@@ -56,8 +56,8 @@ func loadSettings() *settings {
 	if s.MicGain == 0 {
 		s.MicGain = 100
 	}
-	if s.Share.Codec == "" {
-		s.Share = shareCfg{Codec: "vp8", Res: 1080, FPS: 30, Kbps: 15000}
+	if s.Share.Codec == "" || s.Share.Quality == 0 { // also the old "res" shape
+		s.Share = shareCfg{Codec: "vp8", Quality: 100, FPS: 30, Kbps: 15000}
 	}
 	return s
 }
@@ -95,8 +95,8 @@ func (s *settings) setVolume(name string, v int) {
 // shareCfg is how the browser encodes our screen; kept here so it follows
 // the person, not the browser.
 type shareCfg struct {
-	Codec string `json:"codec"` // "vp8" or "vp9"
-	Res   int    `json:"res"`   // max height in px; 0 = as captured
-	FPS   int    `json:"fps"`
-	Kbps  int    `json:"kbps"`
+	Codec   string `json:"codec"`   // "vp8" or "vp9"
+	Quality int    `json:"quality"` // percent of the captured size (20…100)
+	FPS     int    `json:"fps"`
+	Kbps    int    `json:"kbps"`
 }
