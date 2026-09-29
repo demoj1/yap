@@ -13,7 +13,10 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"syscall"
+
+	"github.com/demoj1/yap/internal/tray"
 )
 
 var version = "dev" // set by -ldflags in CI
@@ -170,8 +173,14 @@ func main() {
 		set.Mic, set.Out = *mic, *out
 		set.save()
 	}
+	onWindows := runtime.GOOS == "windows" // no terminal worth the name there: tray icon + the browser page
+	if onWindows && tray.OwnConsole() {
+		tray.Console(false) // double-clicked or opened by a yap:// link: nobody is reading this console
+	}
 	n.audio, err = openAudio(*mic, *out)
 	if err != nil {
+		tray.Console(true)
+		tray.Alert("yap", "audio: "+err.Error()+"\n\nsee "+logPath)
 		log.Fatal("audio:", err)
 	}
 	defer n.audio.Close()
@@ -181,7 +190,7 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stderr, logFile, n.logs))
 	if set.Web {
 		n.web.start()
-		if runtime.GOOS == "windows" { // no terminal worth the name there: the page is the way in
+		if onWindows && os.Getenv("YAP_REJOIN") == "" { // after a rejoin the open page reloads itself
 			openBrowser(n.web.url())
 		}
 	}
@@ -202,6 +211,20 @@ func main() {
 		n.stop = func() { close(done) }
 		go n.run()
 		<-done
+	} else if onWindows { // the tray is the process, the browser page is the screen
+		done := make(chan struct{})
+		var once sync.Once
+		n.stop = func() { once.Do(func() { close(done) }) }
+		if os.Args[1] == "listen" {
+			copyToClipboard(n.link.String())
+			n.system("your link is in the clipboard — send it to friends")
+		}
+		fmt.Printf("\n  %s\n  %s\n\n", n.link, n.web.url())
+		go n.run()
+		if !tray.Run(func() { openBrowser(n.web.url()) }, func() { copyToClipboard(n.link.String()) }, done) {
+			tray.Console(true) // no tray: at least be visible, and quit from the page
+			<-done
+		}
 	} else {
 		notice := ""
 		if os.Args[1] == "listen" { // the host's link is what friends need: hand it over right away
@@ -224,7 +247,8 @@ func main() {
 		if *plain {
 			args = append(args, "-plain")
 		}
-		args = append(args, *l) // flags first: the flag parser stops at the link
+		args = append(args, *l)      // flags first: the flag parser stops at the link
+		os.Setenv("YAP_REJOIN", "1") // the page that asked is still open and reloads itself: no second browser
 		if err := restartWith(args...); err != nil {
 			log.Fatal("restart: ", err)
 		}

@@ -208,6 +208,7 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 		Share    *bool
 		ShareCfg *shareCfg // screen share settings to remember
 		Join     string    // a link: leave this room and restart into that one
+		Quit     bool      // leave and exit: on Windows the page is the only screen
 	}
 	if r.Method != "POST" || json.NewDecoder(r.Body).Decode(&a) != nil {
 		http.Error(rw, "bad request", 400)
@@ -251,6 +252,11 @@ func (w *webServer) act(rw http.ResponseWriter, r *http.Request) {
 	case a.ShareCfg != nil:
 		n.set.Share = *a.ShareCfg
 		n.set.save()
+	case a.Quit:
+		notice = "bye"
+		if n.stop != nil {
+			go n.stop()
+		}
 	case a.Join != "":
 		l, err := parseLink(strings.TrimSpace(a.Join))
 		if err != nil {

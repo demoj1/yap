@@ -121,6 +121,7 @@
 <aside id="drawer">
   <h2>settings <button onclick="drawer.classList.remove('open')">✕</button></h2>
   <h3>room</h3><div class="row"><input id="joinlink2" placeholder="yap://… to join another room" style="flex:1"><button onclick="joinRoom('joinlink2')">join</button></div>
+  <div class="row"><span class="dim">leave the room and close yap</span><button onclick="if (confirm('quit yap?')) act({ Quit: true })">quit yap</button></div>
   <h3>switches</h3><div id="switches"></div>
   <h3>microphone</h3><select id="inputs" onchange="act({Device:{Kind:'in',Name:this.value}})"></select>
   <h3>speakers</h3><select id="outputs" onchange="act({Device:{Kind:'out',Name:this.value}})"></select>
