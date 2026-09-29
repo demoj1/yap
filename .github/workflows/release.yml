@@ -134,6 +134,9 @@ jobs:
           pkg-config --cflags --libs opus
           go build -tags nolibopusfile -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o yap-windows-amd64.exe .
           ls -la yap-windows-amd64.exe
+          # a bare Windows has no mingw runtime: any lib*.dll import (libwinpthread-1.dll since webrtcaec, up to v0.9.32) is a release that will not start
+          objdump -p yap-windows-amd64.exe | grep 'DLL Name'
+          if objdump -p yap-windows-amd64.exe | grep -qi 'DLL Name: lib'; then echo "mingw runtime DLL imported"; exit 1; fi
 
       - uses: actions/upload-artifact@v4
         with:

@@ -9,6 +9,7 @@ package webrtcaec
 #cgo CFLAGS: -I${SRCDIR} -O2 -DNDEBUG
 #cgo CXXFLAGS: -I${SRCDIR} -O2 -std=c++11 -DNDEBUG
 #cgo linux windows LDFLAGS: -static-libstdc++ -static-libgcc
+#cgo windows LDFLAGS: -static
 #include <stdint.h>
 typedef struct yap_aec yap_aec;
 yap_aec* yap_aec_create(int nlp);
