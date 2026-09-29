@@ -12,14 +12,15 @@ import (
 	"unsafe"
 
 	"fyne.io/systray"
+	"golang.org/x/sys/windows"
 )
 
 //go:embed yap.ico
 var icon []byte
 
 var (
-	kernel32              = syscall.NewLazyDLL("kernel32.dll")
-	user32                = syscall.NewLazyDLL("user32.dll")
+	kernel32              = windows.NewLazySystemDLL("kernel32.dll")
+	user32                = windows.NewLazySystemDLL("user32.dll")
 	getConsoleWindow      = kernel32.NewProc("GetConsoleWindow")
 	getConsoleProcessList = kernel32.NewProc("GetConsoleProcessList")
 	showWindow            = user32.NewProc("ShowWindow")
@@ -52,7 +53,7 @@ func Console(show bool) {
 func Alert(title, text string) {
 	t, _ := syscall.UTF16PtrFromString(title)
 	m, _ := syscall.UTF16PtrFromString(text)
-	messageBox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0x10) // MB_ICONERROR
+	messageBox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0x10|0x10000|0x40000) // MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST: no owner window to sit on top of
 }
 
 // Run blocks in the tray until Quit is chosen or stop is closed. open,

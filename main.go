@@ -188,7 +188,7 @@ func main() {
 	n.audio.setAEC(set.AECNLP)
 	n.web, n.logs = &webServer{n: n}, &logRing{}
 	log.SetOutput(io.MultiWriter(os.Stderr, logFile, n.logs))
-	if set.Web {
+	if set.Web || onWindows { // on Windows the page is the only UI: a saved "web off" would leave nothing to see
 		n.web.start()
 		if onWindows && os.Getenv("YAP_REJOIN") == "" { // after a rejoin the open page reloads itself
 			openBrowser(n.web.url())

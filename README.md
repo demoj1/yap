@@ -24,8 +24,10 @@ What you get, all in that one binary:
   loses frames. The browser captures and encodes (WebCodecs), so it works on
   Wayland, Windows and macOS alike.
 - **Two faces**: a terminal UI and a web page on `127.0.0.1:7333` with the same
-  switches (on Windows the page opens by itself). Both show everyone's level,
-  ping, jitter, bitrate, version and talk time.
+  switches. On Windows there is no terminal UI: yap sits in the tray (Open /
+  Copy link / Quit) and the page opens by itself; quit from the tray or from
+  ⚙ on the page. Both faces show everyone's level, ping, jitter, bitrate,
+  version and talk time.
 - **Peer to peer**, encrypted (ChaCha20-Poly1305, a key per pair). Rendezvous
   through ntfy topics derived from the link, STUN for public addresses, UDP
   hole punching. When two people cannot reach each other, a relay forwards

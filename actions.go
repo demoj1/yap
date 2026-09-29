@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +40,7 @@ func (n *node) toggles() []toggle {
 			return name + " " + onOff(b.Load())
 		}
 	}
-	return []toggle{
+	ts := []toggle{
 		{"m", "mic", func() bool { return !ctl.muted.Load() }, func() string {
 			ctl.muted.Store(!ctl.muted.Load())
 			n.sendState()
@@ -60,7 +61,9 @@ func (n *node) toggles() []toggle {
 		{"l", "lock", n.locked.Load, n.toggleLock, nil, false},
 		{"p", "ptt", ctl.ptt.Load, saved(&ctl.ptt, &set.PTT, "push-to-talk (hold space)", n.sendState), nil, false},
 		{"s", "sounds", ctl.sounds.Load, saved(&ctl.sounds, &set.Sounds, "sounds", nil), nil, false},
-		{"w", "web", n.web.running, func() string {
+	}
+	if runtime.GOOS != "windows" { // there the page is the only UI: nothing to switch it off from
+		ts = append(ts, toggle{"w", "web", n.web.running, func() string {
 			set.Web = !n.web.running()
 			set.save()
 			if set.Web {
@@ -68,8 +71,9 @@ func (n *node) toggles() []toggle {
 			}
 			n.web.stop()
 			return "web off"
-		}, n.web.url, false},
+		}, n.web.url, false})
 	}
+	return ts
 }
 
 // press flips the toggle bound to key; "" if there is none.
